@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 import zlib
 import lzma
 import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 # matplotlib.use('tkagg')
 
 import pandas as pd
@@ -16,6 +17,7 @@ from lsg.lsg import LSG, read_lsg_segment
 from lsg.types import GUID, JtVersion
 from metadata.metadata import Metadata, read_metadata_segment
 from shape.shape import Shape, read_shape_segment, ShapeLod0, ShapeLod1
+from shape.topologicallyCompressedRepData import MeshDecoder
 from util.byteStream import ByteStream
 
 import traceback
@@ -227,6 +229,8 @@ def main():
     # parser.add_argument('version', metavar='v', type=int,
                         # nargs='?', help='version to load', default=10)
     parser.add_argument("path")
+    parser.add_argument('--spin', action="store_true",
+                        help="spin the 3D view (interactive backends only)")
     parser.add_argument('--debug', action="store_true")
     args = parser.parse_args()
     logging_config.configure_logging(args.debug)
@@ -247,7 +251,7 @@ def main():
         return toc_entry.type.id == 1
 
     def is_shape(toc_entry: TocEntry):
-        return toc_entry.type.id == 7
+        return toc_entry.type.id == 6
 
     lsg_entry = list(filter(is_lsg, jt_toc))
     lsg_entry = lsg_entry[0]
@@ -275,14 +279,85 @@ def main():
         shapes.append(read_segment(PATH, entry.offset))
         logger.info(f"finished reading shape segment at {entry.offset}")
     print(shapes)
-    vtx = shapes[3][0].vertex_shape_LOD_data.topo_mesh_compressed_lod_data.topo_mesh_compressed_rep_data.topologically_compressed_vertex_records.compressed_vertex_coordinate_array
-    vtx = vtx.vertex_coordinates
-    x, y, z = vtx
 
     fig = plt.figure(figsize=(8, 8))
     ax = fig.add_subplot(111, projection='3d')
 
-    ax.scatter(x, y, z)
+    def log_shape_streams(idx, rep_data):
+        face_deg_streams = rep_data.face_degrees or []
+        ctx_lengths = [len(face_deg_streams[i]) if i < len(face_deg_streams) else 0 for i in range(8)]
+        print(f"[Shape {idx}] valences={len(rep_data.vertex_valences or [])} "
+              f"face_degrees_per_ctx={ctx_lengths} "
+              f"split_faces={len(rep_data.split_face_syms or [])} "
+              f"split_pos={len(rep_data.split_face_positions or [])}")
+        if any(l == 0 for l in ctx_lengths):
+            print(f"[Shape {idx}] Red flag: some degree context streams are empty.")
+
+    # Decode each shape, print what happens, and scatter points
+    for i, sh in enumerate(shapes):
+        lod0 = sh.get(0)
+        if lod0 is None:
+            continue
+        rep_data = (
+            lod0.vertex_shape_LOD_data.topo_mesh_compressed_lod_data
+            .topo_mesh_compressed_rep_data
+        )
+        coord_arr = rep_data.topologically_compressed_vertex_records.compressed_vertex_coordinate_array
+        coords = coord_arr.vertex_coordinates  # (3, N)
+        if coords is None or len(coords) != 3:
+            print(f"[Shape {i}] Red flag: missing coordinate array, skipping shape")
+            continue
+
+        x, y, z = coords
+        ax.scatter(x, y, z, s=2)
+
+        log_shape_streams(i, rep_data)
+        try:
+            decoded = MeshDecoder(rep_data).decode()
+        except Exception as exc:
+            print(f"[Shape {i}] ERROR during topology decode: {exc} (continuing)")
+            # Fallback: link points sequentially so we still see something
+            if len(x) > 1:
+                xs = list(x)
+                ys = list(y)
+                zs = list(z)
+                ax.plot(xs, ys, zs, linewidth=0.5, alpha=0.6, color="gray")
+            continue
+
+        faces = decoded.face_vertices
+        print(f"[Shape {i}] Decoded {len(faces)} faces, {decoded.vertex_count} vertices")
+        for j, face in enumerate(faces[:5]):
+            print(f"  Face {j}: {face}")
+
+        # Plot decoded faces as filled polys (for better shape perception)
+        n_verts = len(x)
+        polys = []
+        for face in faces:
+            if not face or any((v < 0 or v >= n_verts) for v in face):
+                continue
+            verts = [(x[idx], y[idx], z[idx]) for idx in face]
+            polys.append(verts)
+        if polys:
+            coll = Poly3DCollection(polys, alpha=0.25, linewidths=0.2, edgecolors="k")
+            coll.set_facecolor((0.2, 0.6, 0.8, 0.3))
+            ax.add_collection3d(coll)
+
+    if args.spin:
+        backend = plt.get_backend().lower()
+        if "agg" in backend:
+            print("Spin requested but backend is non-interactive (Agg); skipping spin.")
+        else:
+            for az in range(0, 360, 2):
+                ax.view_init(elev=30, azim=az)
+                plt.draw()
+                plt.pause(0.01)
+
+    # Ensure mouse interactions stay active; map left-drag=rotate, right-drag=pan (disable zoom remap)
+    try:
+        ax.mouse_init(rotate_btn=1, pan_btn=3, zoom_btn=None)
+    except Exception:
+        pass
+
     plt.show()
     logger.info("Finished")
 
