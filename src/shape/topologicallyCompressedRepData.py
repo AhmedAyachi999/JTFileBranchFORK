@@ -1,5 +1,6 @@
 import logging
 import struct
+import sys
 from dataclasses import dataclass
 
 from codec.i32Cdp2 import I32CDP2, PredictorType
@@ -53,45 +54,66 @@ class TopologicallyCompressedRepData:
     hash: int
     topologically_compressed_vertex_records: TopologicallyCompressedVertexRecords
 
+
     @classmethod
     def from_bytes(cls, e_bytes, version=JtVersion.V9d5):
-        logger.debug(f'creating from bytes')
-        logger.debug(
-            (e_bytes.bytes[e_bytes.offset:e_bytes.offset+30]).hex(" "))
+        print("creating from bytes")
+        print((e_bytes.bytes[e_bytes.offset:e_bytes.offset+800]).hex(" "))
+
+        def log_after(label: str):
+            offset = e_bytes.offset
+            remaining = e_bytes.remaining()
+            preview_len = 50 if remaining > 50 else remaining
+            preview = e_bytes.bytes[offset:offset + preview_len].hex(" ")
+            print(f"after {label}: offset={offset} remaining={remaining} next50={preview}")
+
+        def read_vec(label: str, predictor=PredictorType.PredNULL):
+            print(f"read_vec_i_32 {label} start_offset={e_bytes.offset}")
+            e_bytes.debug_read = True
+            out = I32CDP2.read_vec_i_32(e_bytes, predictor)
+            e_bytes.debug_read = False
+            print(f"read_vec_i_32 {label} end_offset={e_bytes.offset}")
+            log_after(label)
+            return out
+
         face_degrees = []
         for i in range(8):
-            face_degrees.append(I32CDP2.read_vec_i_32(e_bytes))
-        vertex_valences = I32CDP2.read_vec_i_32(e_bytes)
-        vertex_groups = I32CDP2.read_vec_i_32(e_bytes)
-        vertex_flags = I32CDP2.read_vec_i_32(e_bytes, PredictorType.PredLag1)
+            face_degrees.append(read_vec(f"face_degrees[{i}]"))
+
+        vertex_valences = read_vec("vertex_valences")
+        vertex_groups = read_vec("vertex_groups")
+        vertex_flags = read_vec("vertex_flags", PredictorType.PredLag1)
 
         face_attribute_masks = []
         for i in range(8):
-            face_attribute_masks.append(I32CDP2.read_vec_i_32(e_bytes))
+            face_attribute_masks.append(read_vec(f"face_attribute_masks[{i}]"))
 
-        face_attribute_masks8_30 = I32CDP2.read_vec_i_32(e_bytes)
-        face_attribute_masks8_4 = I32CDP2.read_vec_i_32(e_bytes)
+        face_attribute_masks8_30 = read_vec("face_attribute_masks8_30")
+        face_attribute_masks8_4 = read_vec("face_attribute_masks8_4")
         high_degree_face_attribute_mask = bs.read_vec_i_32(e_bytes)
-        split_face_syms = I32CDP2.read_vec_i_32(
-            e_bytes, PredictorType.PredLag1)
-        split_face_positions = I32CDP2.read_vec_i_32(e_bytes)
+        split_face_syms = read_vec("split_face_syms", PredictorType.PredLag1)
+        split_face_positions = read_vec("split_face_positions")
 
         read_hash = struct.unpack("<I", e_bytes.read(4))[0]
 
         topologically_compressed_vertex_records = TopologicallyCompressedVertexRecords.from_bytes(
-            e_bytes)
-        return TopologicallyCompressedRepData(face_degrees,
-                                              vertex_valences,
-                                              vertex_groups,
-                                              vertex_flags,
-                                              face_attribute_masks,
-                                              face_attribute_masks8_30,
-                                              face_attribute_masks8_4,
-                                              high_degree_face_attribute_mask,
-                                              split_face_syms,
-                                              split_face_positions,
-                                              read_hash,
-                                              topologically_compressed_vertex_records)
+            e_bytes
+        )
+        exit()
+        return TopologicallyCompressedRepData(
+            face_degrees,
+            vertex_valences,
+            vertex_groups,
+            vertex_flags,
+            face_attribute_masks,
+            face_attribute_masks8_30,
+            face_attribute_masks8_4,
+            high_degree_face_attribute_mask,
+            split_face_syms,
+            split_face_positions,
+            read_hash,
+            topologically_compressed_vertex_records,
+        )
 
     @classmethod
     def compute_hash(cls, face_attribute_masks, face_attribute_masks8_30, face_attribute_masks8_4, face_degrees,
@@ -161,6 +183,10 @@ class MeshCoderDriver:
             if any(len(s) == 0 for s in self._deg_streams):
                 # Some contexts are empty; prefer a single flat stream to avoid stalls
                 self._use_flat_deg = True
+        self._empty_deg_contexts = [i for i, s in enumerate(self._deg_streams) if len(s) == 0]
+        self._last_deg_context = None
+        self._last_deg_symbol = None
+        self._last_deg_source = "unset"
         # Also keep a flat fallback stream if some contexts are empty
         self._deg_flat_stream = self._flatten(rep.face_degrees)
         self._deg_flat_idx = 0
@@ -214,9 +240,13 @@ class MeshCoderDriver:
 
     def _faceCntxt(self, iVtx: int, vfm: DualVFMesh) -> int:
         cVal = vfm.valence(iVtx)
+        print(iVtx)
+        print(cVal)
         nKnownFaces = 0
         cKnownTotDeg = 0
+        j = 0
         for i in range(cVal):
+            j=j+1
             iTmpFace = vfm.face(iVtx, i)
             if not vfm.isValidFace(iTmpFace):
                 continue
@@ -231,6 +261,11 @@ class MeshCoderDriver:
             iCCntxt = 6
         else:
             iCCntxt = 7
+        if iCCntxt == 2:
+            print(
+                f"_faceCntxt==2: vtx={iVtx} valence={cVal} "
+                f"nKnownFaces={nKnownFaces} cKnownTotDeg={cKnownTotDeg}"
+            )
         return iCCntxt
 
     def _nextDegSymbol(self, _context: int = 0) -> int:
@@ -239,22 +274,52 @@ class MeshCoderDriver:
             if self._deg_flat_idx < len(self._deg_flat_stream):
                 v = self._deg_flat_stream[self._deg_flat_idx]
                 self._deg_flat_idx += 1
+                self._last_deg_context = _context
+                self._last_deg_symbol = int(v)
+                self._last_deg_source = "flat"
                 return int(v)
+            self._last_deg_context = _context
+            self._last_deg_symbol = 0
+            self._last_deg_source = "flat-empty"
             return 0
 
         if _context < 0 or _context >= len(self._deg_streams):
+            self._last_deg_context = _context
+            self._last_deg_symbol = 0
+            self._last_deg_source = "invalid-context"
             return 0
         stream = self._deg_streams[_context]
         idx = self._deg_idx[_context]
         if idx < len(stream):
             self._deg_idx[_context] = idx + 1
+            self._last_deg_context = _context
+            self._last_deg_symbol = int(stream[idx])
+            self._last_deg_source = "context"
             return int(stream[idx])
         # Fallback to flat stream when context stream is exhausted
         if self._deg_flat_idx < len(self._deg_flat_stream):
             v = self._deg_flat_stream[self._deg_flat_idx]
             self._deg_flat_idx += 1
+            self._last_deg_context = _context
+            self._last_deg_symbol = int(v)
+            self._last_deg_source = "flat-fallback"
             return int(v)
+        self._last_deg_context = _context
+        self._last_deg_symbol = 0
+        self._last_deg_source = "exhausted"
         return 0
+
+    def deg_debug(self) -> dict:
+        return {
+            "empty_contexts": list(self._empty_deg_contexts),
+            "last_context": self._last_deg_context,
+            "last_symbol": self._last_deg_symbol,
+            "last_source": self._last_deg_source,
+            "deg_idx": list(self._deg_idx),
+            "deg_ctx_lens": [len(s) for s in self._deg_streams],
+            "deg_flat_idx": self._deg_flat_idx,
+            "deg_flat_len": len(self._deg_flat_stream),
+        }
 
     def _nextAttrMaskSymbol(self, ctx: int):
         stream = self._attr_ctx_streams.get(ctx, [])
@@ -275,6 +340,8 @@ class MeshCoderDriver:
         return bits
 
     def _nextSplitFaceSymbol(self) -> int:
+        print(self._split_face_stream)
+        exit()
         if self._split_face_idx >= len(self._split_face_stream):
             return -1
         v = self._split_face_stream[self._split_face_idx]
@@ -354,12 +421,35 @@ class _MeshCodec:
                 not self._pDstVFM.setVtxFace(iVtx, iVSlot, iFace)
                 or not self._pDstVFM.setFaceVtx(iFace, 0, iVtx)
             ):
+                logger.error(
+                    "activateF setVtxFace/setFaceVtx failed: vtx=%d vslot=%d face=%d",
+                    iVtx,
+                    iVSlot,
+                    iFace,
+                )
                 return -2
             self.addActiveFace(iFace)
         elif iFace == -1:
+            print(f"activateF: use existing face (split) vtx={iVtx} vslot={iVSlot}")
+            # iVtx = 74, iVSlot = 2
             iFace = self.ioSplitFace(iVtx, iVSlot)
+            print(iFace)
             jFSlot = self.ioSplitPos(iVtx, iVSlot)
+            print(iVtx)
+            exit()
             if iFace == -2 or jFSlot == -1:
+                logger.error(
+                    "activateF split failed: vtx=%d vslot=%d split_face=%d split_pos=%d",
+                    iVtx,
+                    iVSlot,
+                    iFace,
+                    jFSlot,
+                )
+                print(
+                    f"split-face failure: vtx={iVtx} vslot={iVSlot} "
+                    f"split_face={iFace} split_pos={jFSlot}"
+                )
+                sys.exit(1)
                 return -2
             # if split target missing, skip gracefully
             if iFace == -1:
@@ -427,7 +517,16 @@ class _MeshCodec:
         for k in range(ilast, i + 1):
             iFace = self.activateF(iVtx, k)
             if iFace < -1:
-                raise RuntimeError("activateF failed")
+                debug = self._pTMC.deg_debug()
+                logger.error(
+                    "activateF failed in completeV: vtx=%d vslot=%d k=%d valence=%d deg_debug=%s",
+                    iVtx,
+                    iVSlot,
+                    k,
+                    cVal,
+                    debug,
+                )
+                print(f"Degree stream debug: {debug}")
 
     def addVtxToFace(self, iVtx: int, jFSlot: int, iFace: int, iVSlot: int):
         vfm = self._pDstVFM
@@ -504,10 +603,12 @@ class _MeshCodec:
     def ioFace(self, iVtx: int, _jFSlot: int) -> int:
         iCntxt = self._pTMC._faceCntxt(iVtx, self._pDstVFM)
         eSym = self._pTMC._nextDegSymbol(iCntxt)
+        print(f"ioFace: vtx={iVtx} ctx={iCntxt} deg_symbol={eSym}")
         iFace = -1
         if eSym != 0:
             iFace = self._pDstVFM.numFaces()
             cDeg = eSym
+            print(f"ioFace: create new face={iFace} degree={cDeg}")
             nFaceAttrs = 0
             if cDeg <= DualVFMesh.cMBits:
                 uAttrMask = self._pTMC._nextAttrMaskSymbol(
@@ -537,6 +638,9 @@ class _MeshCodec:
             for iAttrSlot in range(nFaceAttrs):
                 self._pDstVFM.setFaceAttr(iFace, iAttrSlot, self._iFaceAttrCtr)
                 self._iFaceAttrCtr += 1
+        if(iFace == -1):
+            print(eSym)
+            print(iFace)
         return iFace
 
     def ioSplitFace(self, _iVtx: int, _jFSlot: int) -> int:

@@ -121,5 +121,4 @@ def decode_bitlength2(codec_driver: CodecDriver):
         # raise ValueError("BitlengthCodec2 didn't consume all bits!")
     else:
         logger.debug(f"Decode worked with {mode=}")
-
     return decoded_symbols

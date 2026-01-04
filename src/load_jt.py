@@ -7,9 +7,8 @@ import struct
 from dataclasses import dataclass, field
 import zlib
 import lzma
-import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d.art3d import Poly3DCollection
-# matplotlib.use('tkagg')
+import numpy as np
+import open3d as o3d
 
 import pandas as pd
 from core import logging_config
@@ -230,7 +229,7 @@ def main():
                         # nargs='?', help='version to load', default=10)
     parser.add_argument("path")
     parser.add_argument('--spin', action="store_true",
-                        help="spin the 3D view (interactive backends only)")
+                        help="(ignored) kept for compatibility; Open3D controls view interactively")
     parser.add_argument('--debug', action="store_true")
     args = parser.parse_args()
     logging_config.configure_logging(args.debug)
@@ -270,95 +269,58 @@ def main():
         GUID((0x0C06BE9e, 0x467A, 0x11E5, 0x80, 0,
              0x91, 0x9d, 0x66, 0x7e, 0x24, 0x30))
     )
-    shapes = []
-    print(shape_entries)
-    # shape_entries = filter(lambda se: se.guid in guid_shape_in_lsg, shape_entries)
-    for entry in shape_entries:
-        logger.info(
-            f"starting to read shape segment {entry.guid} at {entry.offset}")
-        shapes.append(read_segment(PATH, entry.offset))
-        logger.info(f"finished reading shape segment at {entry.offset}")
-    print(shapes)
+    if not shape_entries:
+        logger.warning("No shape segments found in JT file.")
+        return
 
-    fig = plt.figure(figsize=(8, 8))
-    ax = fig.add_subplot(111, projection='3d')
+    entry = shape_entries[0]
+    logger.info(
+        f"starting to read first shape segment {entry.guid} at {entry.offset}")
+    shape = read_segment(PATH, entry.offset)
+    logger.info(f"finished reading first shape segment at {entry.offset}")
 
-    def log_shape_streams(idx, rep_data):
-        face_deg_streams = rep_data.face_degrees or []
-        ctx_lengths = [len(face_deg_streams[i]) if i < len(face_deg_streams) else 0 for i in range(8)]
-        print(f"[Shape {idx}] valences={len(rep_data.vertex_valences or [])} "
-              f"face_degrees_per_ctx={ctx_lengths} "
-              f"split_faces={len(rep_data.split_face_syms or [])} "
-              f"split_pos={len(rep_data.split_face_positions or [])}")
-        if any(l == 0 for l in ctx_lengths):
-            print(f"[Shape {idx}] Red flag: some degree context streams are empty.")
+    lod0 = shape.get(0)
+    if lod0 is None:
+        logger.warning("First shape has no LOD0 data.")
+        return
 
-    # Decode each shape, print what happens, and scatter points
-    for i, sh in enumerate(shapes):
-        lod0 = sh.get(0)
-        if lod0 is None:
+    rep_data = (
+        lod0.vertex_shape_LOD_data.topo_mesh_compressed_lod_data.topo_mesh_compressed_rep_data
+    )
+    coord_arr = rep_data.topologically_compressed_vertex_records.compressed_vertex_coordinate_array
+    coords = coord_arr.vertex_coordinates  # (3, N)
+    if coords is None or len(coords) != 3:
+        logger.warning("Missing coordinate array for first shape.")
+        return
+
+    x, y, z = coords
+    points = np.column_stack((x, y, z))
+
+    decoded = MeshDecoder(rep_data).decode()
+    faces = decoded.face_vertices
+    n_verts = len(points)
+    triangles = []
+    for face in faces:
+        if not face or len(face) < 3:
             continue
-        rep_data = (
-            lod0.vertex_shape_LOD_data.topo_mesh_compressed_lod_data
-            .topo_mesh_compressed_rep_data
-        )
-        coord_arr = rep_data.topologically_compressed_vertex_records.compressed_vertex_coordinate_array
-        coords = coord_arr.vertex_coordinates  # (3, N)
-        if coords is None or len(coords) != 3:
-            print(f"[Shape {i}] Red flag: missing coordinate array, skipping shape")
+        if any((v < 0 or v >= n_verts) for v in face):
             continue
+        v0 = face[0]
+        for j in range(1, len(face) - 1):
+            triangles.append((v0, face[j], face[j + 1]))
 
-        x, y, z = coords
-        ax.scatter(x, y, z, s=2)
+    if not triangles:
+        logger.warning("No valid faces decoded; showing point cloud instead.")
+        pcd = o3d.geometry.PointCloud()
+        pcd.points = o3d.utility.Vector3dVector(points)
+        o3d.visualization.draw_geometries([pcd], window_name="JT Points (First Shape)")
+        return
 
-        log_shape_streams(i, rep_data)
-        try:
-            decoded = MeshDecoder(rep_data).decode()
-        except Exception as exc:
-            print(f"[Shape {i}] ERROR during topology decode: {exc} (continuing)")
-            # Fallback: link points sequentially so we still see something
-            if len(x) > 1:
-                xs = list(x)
-                ys = list(y)
-                zs = list(z)
-                ax.plot(xs, ys, zs, linewidth=0.5, alpha=0.6, color="gray")
-            continue
-
-        faces = decoded.face_vertices
-        print(f"[Shape {i}] Decoded {len(faces)} faces, {decoded.vertex_count} vertices")
-        for j, face in enumerate(faces[:5]):
-            print(f"  Face {j}: {face}")
-
-        # Plot decoded faces as filled polys (for better shape perception)
-        n_verts = len(x)
-        polys = []
-        for face in faces:
-            if not face or any((v < 0 or v >= n_verts) for v in face):
-                continue
-            verts = [(x[idx], y[idx], z[idx]) for idx in face]
-            polys.append(verts)
-        if polys:
-            coll = Poly3DCollection(polys, alpha=0.25, linewidths=0.2, edgecolors="k")
-            coll.set_facecolor((0.2, 0.6, 0.8, 0.3))
-            ax.add_collection3d(coll)
-
-    if args.spin:
-        backend = plt.get_backend().lower()
-        if "agg" in backend:
-            print("Spin requested but backend is non-interactive (Agg); skipping spin.")
-        else:
-            for az in range(0, 360, 2):
-                ax.view_init(elev=30, azim=az)
-                plt.draw()
-                plt.pause(0.01)
-
-    # Ensure mouse interactions stay active; map left-drag=rotate, right-drag=pan (disable zoom remap)
-    try:
-        ax.mouse_init(rotate_btn=1, pan_btn=3, zoom_btn=None)
-    except Exception:
-        pass
-
-    plt.show()
+    mesh = o3d.geometry.TriangleMesh()
+    mesh.vertices = o3d.utility.Vector3dVector(points)
+    mesh.triangles = o3d.utility.Vector3iVector(np.asarray(triangles, dtype=np.int32))
+    mesh.compute_vertex_normals()
+    o3d.visualization.draw_geometries([mesh], window_name="JT Mesh (First Shape)")
     logger.info("Finished")
 
 

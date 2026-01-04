@@ -5,11 +5,26 @@ class ByteStream:
     bytes: bytes
     offset: int
 
-    def __init__(self, b, offset=0):
+    def __init__(self, b, offset=0, debug_read=False):
         self.bytes = b
         self.offset = offset
+        self.debug_read = debug_read
 
     def read(self, length: int):
+        if getattr(self, "debug_read", False):
+            start = self.offset
+            if self.offset + length >= len(self.bytes):
+                data = self.bytes[self.offset:]
+                print(
+                    f"ByteStream.read offset={start} length={length} data={data.hex(' ')}"
+                )
+                return data
+            data = self.bytes[self.offset: self.offset + length]
+            self.offset += length
+            print(
+                f"ByteStream.read offset={start} length={length} data={data.hex(' ')}"
+            )
+            return data
         if self.offset + length >= len(self.bytes):
             return self.bytes[self.offset:]
         data = self.bytes[self.offset: self.offset + length]
