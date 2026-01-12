@@ -1,3 +1,6 @@
+import struct
+
+
 def mix(a, b, c):
     """
      mix -- mix 3 32-bit values reversibly.
@@ -196,3 +199,21 @@ def jt_hash32(k, init_val):
     c &= 0xffffffff
     a,b,c = mix(a, b, c)
     return c
+
+
+def jt_hash16(k, init_val):
+    if not k:
+        return jt_hash32(b"", init_val)
+    data = bytearray()
+    for v in k:
+        data += struct.pack("<H", v & 0xFFFF)
+    return jt_hash32(bytes(data), init_val)
+
+
+def jt_hash32_ints(k, init_val):
+    if not k:
+        return jt_hash32(b"", init_val)
+    data = bytearray()
+    for v in k:
+        data += struct.pack("<I", v & 0xFFFFFFFF)
+    return jt_hash32(bytes(data), init_val)

@@ -6,14 +6,19 @@ from dataclasses import dataclass
 from codec.i32Cdp2 import I32CDP2, PredictorType
 from shape.topologicallyCompressedVertexRecords import TopologicallyCompressedVertexRecords
 from util import byteStream as bs
-from util.jt_hash import jt_hash32
+from util.jt_hash import jt_hash16, jt_hash32_ints
 from lsg.types import JtVersion
 from shape.dual_vf_mesh import DualVFMesh
 from typing import Optional, List
 
 logger = logging.getLogger(__name__)
 
+def _inc_mod(idx: int, mod: int) -> int:
+    return (idx + 1) % mod if mod > 0 else 0
 
+
+def _dec_mod(idx: int, mod: int) -> int:
+    return (idx - 1 + mod) % mod if mod > 0 else 0
 @dataclass
 class TopologicallyCompressedRepData:
     """
@@ -35,7 +40,7 @@ class TopologicallyCompressedRepData:
     To begin the decoding process, first read the compressed data fields shown in Figure 89. These fields provide
     all the information necessary to reconstruct the per face-group organized sets of triangles. The first 22 fields
     represent the topological information, and the remaining fields constitute the set of unique vertex records to be
-    used. The next step is to run the topological decoder algorithm detailed in Appendix E: Polygon Mesh Topology
+    used. The next step is to run the topological decoder algorithm detailed in Appendix E: tPolygon Mesh Topology
     Coder on this data to reconstruct the topologically connected representation of the triangle mesh in a so-called
     "dual VFMesh.' The triangles in this heavy-weight data structure can then be exported to a lighter-weight form,
     and the dual VFMesh discarded if desired.
@@ -69,8 +74,22 @@ class TopologicallyCompressedRepData:
 
         def read_vec(label: str, predictor=PredictorType.PredNULL):
             print(f"read_vec_i_32 {label} start_offset={e_bytes.offset}")
+            if label == "vertex_valences":
+                start = e_bytes.offset
+                if start + 5 <= len(e_bytes.bytes):
+                    value_count = struct.unpack("<i", e_bytes.bytes[start:start + 4])[0]
+                    codec_type = e_bytes.bytes[start + 4]
+                    code_text_len = None
+                    if codec_type in (1, 3) and start + 9 <= len(e_bytes.bytes):
+                        code_text_len = struct.unpack("<i", e_bytes.bytes[start + 5:start + 9])[0]
+                    print(
+                        f"peek vertex_valences header: value_count={value_count} "
+                        f"codec_type={codec_type} code_text_length={code_text_len}"
+                    )
             e_bytes.debug_read = True
             out = I32CDP2.read_vec_i_32(e_bytes, predictor)
+            print(out)
+            print()
             e_bytes.debug_read = False
             print(f"read_vec_i_32 {label} end_offset={e_bytes.offset}")
             log_after(label)
@@ -78,8 +97,10 @@ class TopologicallyCompressedRepData:
 
         face_degrees = []
         for i in range(8):
+            print(f"face_degrees[{i}] pre_offset={e_bytes.offset}")
             face_degrees.append(read_vec(f"face_degrees[{i}]"))
-
+            print(f"face_degrees[{i}] post_offset={e_bytes.offset}")
+        print(face_degrees)
         vertex_valences = read_vec("vertex_valences")
         vertex_groups = read_vec("vertex_groups")
         vertex_flags = read_vec("vertex_flags", PredictorType.PredLag1)
@@ -90,16 +111,41 @@ class TopologicallyCompressedRepData:
 
         face_attribute_masks8_30 = read_vec("face_attribute_masks8_30")
         face_attribute_masks8_4 = read_vec("face_attribute_masks8_4")
-        high_degree_face_attribute_mask = bs.read_vec_i_32(e_bytes)
+        # Experiment: decode high-degree masks using the same codec path.
+        high_degree_face_attribute_mask = I32CDP2.read_vec_i_32(e_bytes)
         split_face_syms = read_vec("split_face_syms", PredictorType.PredLag1)
         split_face_positions = read_vec("split_face_positions")
-
         read_hash = struct.unpack("<I", e_bytes.read(4))[0]
-
+        print(f"read composite hash (raw) = 0x{read_hash:08X}")
+        computed_hash = cls.compute_hash(
+            face_attribute_masks,
+            face_attribute_masks8_30,
+            face_attribute_masks8_4,
+            face_degrees,
+            high_degree_face_attribute_mask,
+            split_face_positions,
+            split_face_syms,
+            vertex_flags,
+            vertex_groups,
+            vertex_valences,
+        )
+        if computed_hash != read_hash:
+            logger.warning(
+                "Composite hash mismatch: computed=0x%08X read=0x%08X",
+                computed_hash,
+                read_hash,
+            )
+            raise SystemExit(1)
+        else:
+            logger.info("Composite hash OK: 0x%08X", computed_hash)
+            raise SystemExit(0)
         topologically_compressed_vertex_records = TopologicallyCompressedVertexRecords.from_bytes(
             e_bytes
         )
-        exit()
+        print(
+            "number_of_topological_vertices=",
+            topologically_compressed_vertex_records.number_of_topological_vertices,
+        )
         return TopologicallyCompressedRepData(
             face_degrees,
             vertex_valences,
@@ -120,38 +166,38 @@ class TopologicallyCompressedRepData:
                      high_degree_face_attribute_mask, split_face_positions, split_face_syms, vertex_flags,
                      vertex_groups, vertex_valences):
         comp_hash = 0
-        for fd in face_degrees[:-1]:
-            comp_hash = jt_hash32(fd, comp_hash)
-        comp_hash = jt_hash32(vertex_valences, comp_hash)
-        comp_hash = jt_hash32(vertex_groups, comp_hash)
-        comp_hash = jt_hash32(vertex_flags, comp_hash)
-        for am in face_attribute_masks:
-            comp_hash = jt_hash32(am, comp_hash)
-        comp_hash = jt_hash32(face_attribute_masks[7], comp_hash)
-        comp_hash = jt_hash32(face_attribute_masks8_30, comp_hash)
-        comp_hash = jt_hash32(face_attribute_masks8_4, comp_hash)
-        comp_hash = jt_hash32(high_degree_face_attribute_mask, comp_hash)
-        comp_hash = jt_hash32(split_face_syms, comp_hash)
-        comp_hash = jt_hash32(split_face_positions, comp_hash)
+        face_degrees = face_degrees or []
+        vertex_valences = vertex_valences or []
+        vertex_groups = vertex_groups or []
+        vertex_flags = vertex_flags or []
+        face_attribute_masks = face_attribute_masks or []
+        face_attribute_masks8_30 = face_attribute_masks8_30 or []
+        face_attribute_masks8_4 = face_attribute_masks8_4 or []
+        high_degree_face_attribute_mask = high_degree_face_attribute_mask or []
+        split_face_syms = split_face_syms or []
+        split_face_positions = split_face_positions or []
+
+        for fd in face_degrees[:8]:
+            comp_hash = jt_hash32_ints(fd or [], comp_hash)
+        comp_hash = jt_hash32_ints(vertex_valences, comp_hash)
+        comp_hash = jt_hash32_ints(vertex_groups, comp_hash)
+        comp_hash = jt_hash16(vertex_flags, comp_hash)
+
+        for i in range(min(7, len(face_attribute_masks))):
+            comp_hash = jt_hash32_ints(face_attribute_masks[i] or [], comp_hash)
+        # Context 7 is split into 30/30/4-bit chunks; assume they are stored separately.
+        if len(face_attribute_masks) > 7:
+            comp_hash = jt_hash32_ints(face_attribute_masks[7] or [], comp_hash)
+        comp_hash = jt_hash32_ints(face_attribute_masks8_30, comp_hash)
+        comp_hash = jt_hash32_ints(face_attribute_masks8_4, comp_hash)
+
+        comp_hash = jt_hash32_ints(high_degree_face_attribute_mask, comp_hash)
+        comp_hash = jt_hash32_ints(split_face_syms, comp_hash)
+        comp_hash = jt_hash32_ints(split_face_positions, comp_hash)
         return comp_hash
 
-
-class DecodedMesh:
-    """Container for decoded topology."""
-
-    def __init__(self, face_vertices: list[list[int]], vertex_count: int):
-        self.face_vertices = face_vertices
-        self.vertex_count = vertex_count
-
-
-def _inc_mod(idx: int, mod: int) -> int:
-    return (idx + 1) % mod if mod > 0 else 0
-
-
-def _dec_mod(idx: int, mod: int) -> int:
-    return (idx - 1 + mod) % mod if mod > 0 else 0
-
-
+# This class serves as a coordinating driver for mesh coding and decoding.
+# class MeshCoderDriver
 class MeshCoderDriver:
     """
     Supplies the symbol streams for the mesh decoder.
@@ -295,6 +341,7 @@ class MeshCoderDriver:
             self._last_deg_context = _context
             self._last_deg_symbol = int(stream[idx])
             self._last_deg_source = "context"
+            print(f"deg ctx={_context} idx={idx} val={stream[idx]}")
             return int(stream[idx])
         # Fallback to flat stream when context stream is exhausted
         if self._deg_flat_idx < len(self._deg_flat_stream):
@@ -307,6 +354,8 @@ class MeshCoderDriver:
         self._last_deg_context = _context
         self._last_deg_symbol = 0
         self._last_deg_source = "exhausted"
+        print(f"deg ctx={_context} idx={idx} val={stream[idx]}")
+        exit()
         return 0
 
     def deg_debug(self) -> dict:
@@ -340,8 +389,6 @@ class MeshCoderDriver:
         return bits
 
     def _nextSplitFaceSymbol(self) -> int:
-        print(self._split_face_stream)
-        exit()
         if self._split_face_idx >= len(self._split_face_stream):
             return -1
         v = self._split_face_stream[self._split_face_idx]
@@ -354,8 +401,16 @@ class MeshCoderDriver:
         v = self._split_pos_stream[self._split_pos_idx]
         self._split_pos_idx += 1
         return int(v)
-
-
+# This class serves as the abstract base class from which two concrete classes
+# are derived to implement the core operations for a polygonal
+# mesh coder or decoder. An instance of this object is used by the
+# MeshCoderDriver to encode and decode polygonal meshes.
+#
+#  This class makes extensive use of DualVFMesh objects as the primary source and
+#  destination mesh topology storage data structures. This mediating data
+#  structure is necessary because the mesh coding scheme is deeply cooperative
+#  with and dependent upon such a vertex-facet data structure. Please refer to
+#  DualVFMesh for more information
 class _MeshCodec:
     """Decode-side implementation of MeshCodec from the spec."""
 
@@ -409,12 +464,26 @@ class _MeshCodec:
         iVSlot = 0
         while jVtxSlot != -1:
             iVtx = self.activateV(iFace, jVtxSlot)
+            if iVtx < 0:
+                logger.warning(
+                    "Missing vertex symbol; skipping face completion: face=%d slot=%d",
+                    iFace,
+                    jVtxSlot,
+                )
+                if self._pDstVFM.numVts() > 0:
+                    # Fill the slot with a fallback vertex to avoid infinite loops.
+                    self._pDstVFM.setFaceVtx(iFace, jVtxSlot, 0)
+                    jVtxSlot = self._pDstVFM.findVtxSlot(iFace, -1)
+                    continue
+                break
             if not (self._pDstVFM.vtx(iFace, jVtxSlot) == iVtx and self._pDstVFM.face(iVtx, iVSlot) == iFace):
                 raise RuntimeError("FV consistency failed")
             self.completeV(iVtx, jVtxSlot)
             jVtxSlot = self._pDstVFM.findVtxSlot(iFace, -1)
 
     def activateF(self, iVtx: int, iVSlot: int) -> int:
+        if iVtx < 0:
+            return -1
         iFace = self.ioFace(iVtx, iVSlot)
         if iFace >= 0:
             if (
@@ -430,36 +499,14 @@ class _MeshCodec:
                 return -2
             self.addActiveFace(iFace)
         elif iFace == -1:
-            print(f"activateF: use existing face (split) vtx={iVtx} vslot={iVSlot}")
-            # iVtx = 74, iVSlot = 2
-            iFace = self.ioSplitFace(iVtx, iVSlot)
-            print(iFace)
-            jFSlot = self.ioSplitPos(iVtx, iVSlot)
-            print(iVtx)
-            exit()
-            if iFace == -2 or jFSlot == -1:
-                logger.error(
-                    "activateF split failed: vtx=%d vslot=%d split_face=%d split_pos=%d",
-                    iVtx,
-                    iVSlot,
-                    iFace,
-                    jFSlot,
-                )
-                print(
-                    f"split-face failure: vtx={iVtx} vslot={iVSlot} "
-                    f"split_face={iFace} split_pos={jFSlot}"
-                )
-                sys.exit(1)
-                return -2
-            # if split target missing, skip gracefully
-            if iFace == -1:
-                return -1
-            self._pDstVFM.setVtxFace(iVtx, iVSlot, iFace)
-            self.addVtxToFace(iVtx, iVSlot, iFace, jFSlot)
+            # Skip reuse/split faces; only keep newly created faces.
+            return -1
         return iFace
 
     def activateV(self, iFace: int, iVSlot: int) -> int:
         iVtx = self.ioVtx(iFace, iVSlot)
+        if iVtx < 0:
+            return -1
         self._pDstVFM.setVtxFace(iVtx, 0, iFace)
         self.addVtxToFace(iVtx, 0, iFace, iVSlot)
         return iVtx
@@ -601,46 +648,47 @@ class _MeshCodec:
         return iVtx
 
     def ioFace(self, iVtx: int, _jFSlot: int) -> int:
+        if iVtx < 0:
+            return -1
         iCntxt = self._pTMC._faceCntxt(iVtx, self._pDstVFM)
         eSym = self._pTMC._nextDegSymbol(iCntxt)
         print(f"ioFace: vtx={iVtx} ctx={iCntxt} deg_symbol={eSym}")
-        iFace = -1
-        if eSym != 0:
-            iFace = self._pDstVFM.numFaces()
-            cDeg = eSym
-            print(f"ioFace: create new face={iFace} degree={cDeg}")
-            nFaceAttrs = 0
-            if cDeg <= DualVFMesh.cMBits:
-                uAttrMask = self._pTMC._nextAttrMaskSymbol(
-                    max(0, min(7, cDeg - 2))
-                )
-                mask = int(uAttrMask)
-                uMask = mask
-                while uMask:
-                    nFaceAttrs += uMask & 1
-                    uMask >>= 1
-                self._pDstVFM.newFace_smallMask(iFace, cDeg, nFaceAttrs, mask, 0)
-            else:
-                vbAttrMask = self._pTMC._nextAttrMaskSymbol_large()
-                for bit in vbAttrMask:
-                    if bit:
-                        nFaceAttrs += 1
-                self._pDstVFM.newFace_bigMask(iFace, cDeg, nFaceAttrs, vbAttrMask, 0)
+        if eSym == 0:
+            # Skip split/reuse faces; only create new faces.
+            return -1
 
-            if nFaceAttrs > cDeg:
-                logger.warning(
-                    "Corrupt face attribute mask: %d attrs > degree %d; clamping",
-                    nFaceAttrs,
-                    cDeg,
-                )
-                nFaceAttrs = min(nFaceAttrs, cDeg)
+        iFace = self._pDstVFM.numFaces()
+        cDeg = eSym
+        print(f"ioFace: create new face={iFace} degree={cDeg}")
+        nFaceAttrs = 0
+        if cDeg <= DualVFMesh.cMBits:
+            uAttrMask = self._pTMC._nextAttrMaskSymbol(
+                max(0, min(7, cDeg - 2))
+            )
+            mask = int(uAttrMask)
+            uMask = mask
+            while uMask:
+                nFaceAttrs += uMask & 1
+                uMask >>= 1
+            self._pDstVFM.newFace_smallMask(iFace, cDeg, nFaceAttrs, mask, 0)
+        else:
+            vbAttrMask = self._pTMC._nextAttrMaskSymbol_large()
+            for bit in vbAttrMask:
+                if bit:
+                    nFaceAttrs += 1
+            self._pDstVFM.newFace_bigMask(iFace, cDeg, nFaceAttrs, vbAttrMask, 0)
 
-            for iAttrSlot in range(nFaceAttrs):
-                self._pDstVFM.setFaceAttr(iFace, iAttrSlot, self._iFaceAttrCtr)
-                self._iFaceAttrCtr += 1
-        if(iFace == -1):
-            print(eSym)
-            print(iFace)
+        if nFaceAttrs > cDeg:
+            logger.warning(
+                "Corrupt face attribute mask: %d attrs > degree %d; clamping",
+                nFaceAttrs,
+                cDeg,
+            )
+            nFaceAttrs = min(nFaceAttrs, cDeg)
+
+        for iAttrSlot in range(nFaceAttrs):
+            self._pDstVFM.setFaceAttr(iFace, iAttrSlot, self._iFaceAttrCtr)
+            self._iFaceAttrCtr += 1
         return iFace
 
     def ioSplitFace(self, _iVtx: int, _jFSlot: int) -> int:
@@ -657,8 +705,20 @@ class _MeshCodec:
     def ioSplitPos(self, _iVtx: int, _jFSlot: int) -> int:
         eSym = self._pTMC._nextSplitPosSymbol()
         return eSym
+class DecodedMesh:
+    """Container for decoded topology."""
 
-
+    def __init__(
+        self,
+        face_vertices: list[list[int]],
+        vertex_count: int,
+        face_attr_indices: list[list[int]] = None,
+    ):
+        self.face_vertices = face_vertices
+        self.vertex_count = vertex_count
+        self.face_attr_indices = face_attr_indices or []
+# This class implements the five abstract methods from
+# MeshCodec to realize a mesh decoder.
 class MeshDecoder:
     """Decoder facade exposing decode() -> DecodedMesh."""
 
@@ -669,12 +729,37 @@ class MeshDecoder:
     def decode(self) -> DecodedMesh:
         codec = _MeshCodec(self.driver)
         vfm = codec.run()
-
         face_vertices: List[List[int]] = []
+        face_attr_indices: List[List[int]] = []
         for i in range(vfm.numFaces()):
             deg = vfm.degree(i)
             verts = [vfm.vtx(i, slot) for slot in range(deg)]
             face_vertices.append(verts)
+            attr_mask = vfm.attrMask(i)
+            if attr_mask is None or deg == 0:
+                face_attr_indices.append([-1] * deg)
+                continue
+            if isinstance(attr_mask, int):
+                bits = [bool((attr_mask >> b) & 1) for b in range(deg)]
+            else:
+                bits = [bool(b) for b in attr_mask[:deg]]
+            num_attrs = vfm.numAttrsOfFace(i)
+            attrs = [vfm.faceAttr(i, s) for s in range(num_attrs)]
+            if not attrs:
+                face_attr_indices.append([-1] * deg)
+                continue
+            corner_attrs = [None] * deg
+            corner_attrs[0] = attrs[0]
+            attr_pos = 1
+            # Apply the bit vector in the opposite traversal direction.
+            for offset in range(1, deg):
+                j = deg - offset
+                if bits[j] and attr_pos < len(attrs):
+                    corner_attrs[j] = attrs[attr_pos]
+                    attr_pos += 1
+                else:
+                    corner_attrs[j] = corner_attrs[(j + 1) % deg]
+            face_attr_indices.append(corner_attrs)
 
         vertex_records = self.rep_data.topologically_compressed_vertex_records
         vertex_count = getattr(
@@ -686,4 +771,4 @@ class MeshDecoder:
             len(face_vertices),
             vertex_count,
         )
-        return DecodedMesh(face_vertices, vertex_count)
+        return DecodedMesh(face_vertices, vertex_count, face_attr_indices)

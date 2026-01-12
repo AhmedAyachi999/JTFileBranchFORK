@@ -295,15 +295,78 @@ def main():
 
     x, y, z = coords
     points = np.column_stack((x, y, z))
+    valences = rep_data.vertex_valences or []
+    if len(valences) != len(points):
+        logger.error(
+            "Vertex valence count mismatch: valences=%d points=%d",
+            len(valences),
+            len(points),
+        )
+        raise SystemExit(1)
 
     decoded = MeshDecoder(rep_data).decode()
     faces = decoded.face_vertices
+    face_attr_indices = decoded.face_attr_indices
     n_verts = len(points)
     triangles = []
+    normals = None
+    normal_array = rep_data.topologically_compressed_vertex_records.compressed_vertex_normal_array
+    if normal_array and normal_array.normal_coordinates:
+        nx, ny, nz = normal_array.normal_coordinates
+        normals = list(zip(nx, ny, nz))
+
+    use_attr_normals = normals is not None and len(face_attr_indices) == len(faces)
+    if use_attr_normals:
+        mesh_vertices = []
+        mesh_normals = []
+        mesh_triangles = []
+        vertex_map = {}
+        for face_idx, face in enumerate(faces):
+            if not face:
+                continue
+            if any((v < 0 or v >= n_verts) for v in face):
+                continue
+            if len(face) < 3:
+                continue
+            attrs = face_attr_indices[face_idx] if face_idx < len(face_attr_indices) else []
+            if len(attrs) != len(face):
+                continue
+            v0 = face[0]
+            a0 = attrs[0]
+            for j in range(1, len(face) - 1):
+                tri = [(v0, a0), (face[j], attrs[j]), (face[j + 1], attrs[j + 1])]
+                tri_idx = []
+                valid = True
+                for v_idx, a_idx in tri:
+                    if a_idx < 0 or a_idx >= len(normals):
+                        valid = False
+                        break
+                    key = (v_idx, a_idx)
+                    if key not in vertex_map:
+                        vertex_map[key] = len(mesh_vertices)
+                        mesh_vertices.append(points[v_idx])
+                        mesh_normals.append(normals[a_idx])
+                    tri_idx.append(vertex_map[key])
+                if valid:
+                    mesh_triangles.append(tuple(tri_idx))
+        if mesh_triangles:
+            mesh = o3d.geometry.TriangleMesh()
+            mesh.vertices = o3d.utility.Vector3dVector(np.asarray(mesh_vertices, dtype=np.float64))
+            mesh.triangles = o3d.utility.Vector3iVector(np.asarray(mesh_triangles, dtype=np.int32))
+            mesh.vertex_normals = o3d.utility.Vector3dVector(np.asarray(mesh_normals, dtype=np.float64))
+            pcd = o3d.geometry.PointCloud()
+            pcd.points = o3d.utility.Vector3dVector(points)
+            o3d.visualization.draw_geometries([mesh, pcd], window_name="JT Mesh + Points (First Shape)")
+            logger.info("Finished")
+            return
+
     for face in faces:
-        if not face or len(face) < 3:
+        if not face:
             continue
+        # Skip faces referencing invalid vertices.
         if any((v < 0 or v >= n_verts) for v in face):
+            continue
+        if len(face) < 3:
             continue
         v0 = face[0]
         for j in range(1, len(face) - 1):
@@ -320,7 +383,9 @@ def main():
     mesh.vertices = o3d.utility.Vector3dVector(points)
     mesh.triangles = o3d.utility.Vector3iVector(np.asarray(triangles, dtype=np.int32))
     mesh.compute_vertex_normals()
-    o3d.visualization.draw_geometries([mesh], window_name="JT Mesh (First Shape)")
+    pcd = o3d.geometry.PointCloud()
+    pcd.points = o3d.utility.Vector3dVector(points)
+    o3d.visualization.draw_geometries([mesh, pcd], window_name="JT Mesh + Points (First Shape)")
     logger.info("Finished")
 
 
