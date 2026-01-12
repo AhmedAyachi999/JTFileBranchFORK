@@ -70,8 +70,10 @@ class TopologicallyCompressedRepData:
         face_attribute_masks8_30 = I32CDP2.read_vec_i_32(e_bytes)
         face_attribute_masks8_4 = I32CDP2.read_vec_i_32(e_bytes)
         high_degree_face_attribute_mask = bs.read_vec_i_32(e_bytes)
+        # Here is the problem. Is it due to the previous readings ?
         split_face_syms = I32CDP2.read_vec_i_32(
             e_bytes, PredictorType.PredLag1)
+        # Here is the problem. Is it due to the previous readings ?
         split_face_positions = I32CDP2.read_vec_i_32(e_bytes)
 
         read_hash = struct.unpack("<I", e_bytes.read(4))[0]

@@ -7,8 +7,8 @@ import struct
 from dataclasses import dataclass, field
 import zlib
 import lzma
-import matplotlib.pyplot as plt
-# matplotlib.use('tkagg')
+import numpy as np
+import open3d as o3d
 
 import pandas as pd
 from core import logging_config
@@ -227,6 +227,8 @@ def main():
     # parser.add_argument('version', metavar='v', type=int,
                         # nargs='?', help='version to load', default=10)
     parser.add_argument("path")
+    parser.add_argument('--spin', action="store_true",
+                        help="(ignored) kept for compatibility; Open3D controls view interactively")
     parser.add_argument('--debug', action="store_true")
     args = parser.parse_args()
     logging_config.configure_logging(args.debug)
@@ -247,7 +249,7 @@ def main():
         return toc_entry.type.id == 1
 
     def is_shape(toc_entry: TocEntry):
-        return toc_entry.type.id == 7
+        return toc_entry.type.id == 6
 
     lsg_entry = list(filter(is_lsg, jt_toc))
     lsg_entry = lsg_entry[0]
@@ -266,25 +268,42 @@ def main():
         GUID((0x0C06BE9e, 0x467A, 0x11E5, 0x80, 0,
              0x91, 0x9d, 0x66, 0x7e, 0x24, 0x30))
     )
-    shapes = []
-    print(shape_entries)
-    # shape_entries = filter(lambda se: se.guid in guid_shape_in_lsg, shape_entries)
-    for entry in shape_entries:
-        logger.info(
-            f"starting to read shape segment {entry.guid} at {entry.offset}")
-        shapes.append(read_segment(PATH, entry.offset))
-        logger.info(f"finished reading shape segment at {entry.offset}")
-    print(shapes)
-    vtx = shapes[3][0].vertex_shape_LOD_data.topo_mesh_compressed_lod_data.topo_mesh_compressed_rep_data.topologically_compressed_vertex_records.compressed_vertex_coordinate_array
-    vtx = vtx.vertex_coordinates
-    x, y, z = vtx
+    if not shape_entries:
+        logger.warning("No shape segments found in JT file.")
+        return
 
-    fig = plt.figure(figsize=(8, 8))
-    ax = fig.add_subplot(111, projection='3d')
+    entry = shape_entries[0]
+    logger.info(
+        f"starting to read first shape segment {entry.guid} at {entry.offset}")
+    shape = read_segment(PATH, entry.offset)
+    logger.info(f"finished reading first shape segment at {entry.offset}")
 
-    ax.scatter(x, y, z)
-    plt.show()
-    logger.info("Finished")
+    lod0 = shape.get(0)
+    if lod0 is None:
+        logger.warning("First shape has no LOD0 data.")
+        return
+
+    rep_data = (
+        lod0.vertex_shape_LOD_data.topo_mesh_compressed_lod_data.topo_mesh_compressed_rep_data
+    )
+    coord_arr = rep_data.topologically_compressed_vertex_records.compressed_vertex_coordinate_array
+    coords = coord_arr.vertex_coordinates  # (3, N)
+    if coords is None or len(coords) != 3:
+        logger.warning("Missing coordinate array for first shape.")
+        return
+
+    x, y, z = coords
+    points = np.column_stack((x, y, z))
+    valences = rep_data.vertex_valences or []
+    if len(valences) != len(points):
+        logger.error(
+            "Vertex valence count mismatch: valences=%d points=%d",
+            len(valences),
+            len(points),
+        )
+        raise SystemExit(1)
+
+
 
 
 if __name__ == "__main__":
