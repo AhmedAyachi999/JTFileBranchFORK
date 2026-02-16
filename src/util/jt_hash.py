@@ -196,3 +196,37 @@ def jt_hash32(k, init_val):
     c &= 0xffffffff
     a,b,c = mix(a, b, c)
     return c
+
+
+def _to_bytes_le_u32(values):
+    out = []
+    for v in values:
+        v = int(v) & 0xFFFFFFFF
+        out.append(v & 0xFF)
+        out.append((v >> 8) & 0xFF)
+        out.append((v >> 16) & 0xFF)
+        out.append((v >> 24) & 0xFF)
+    return out
+
+
+def _to_bytes_le_u16(values):
+    out = []
+    for v in values:
+        v = int(v) & 0xFFFF
+        out.append(v & 0xFF)
+        out.append((v >> 8) & 0xFF)
+    return out
+
+
+def jt_hash32_ints(values, init_val):
+    """
+    Hash a list of 32-bit integers (little-endian) using jt_hash32.
+    """
+    return jt_hash32(_to_bytes_le_u32(values or []), init_val)
+
+
+def jt_hash16(values, init_val):
+    """
+    Hash a list of 16-bit integers (little-endian) using jt_hash32.
+    """
+    return jt_hash32(_to_bytes_le_u16(values or []), init_val)
