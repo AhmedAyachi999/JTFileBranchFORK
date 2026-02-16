@@ -52,16 +52,6 @@ class DualVFMesh:
         self._viFaceVtxIndices.clear()
         self._viFaceAttrIndices.clear()
 
-    # ---------- Small helpers to grow lists safely ----------
-
-    def _ensure_vtx_index(self, iVtx: int) -> None:
-        while len(self._vVtxEnts) <= iVtx:
-            self._vVtxEnts.append(DualVFMesh.VtxEnt())
-
-    def _ensure_face_index(self, iFace: int) -> None:
-        while len(self._vFaceEnts) <= iFace:
-            self._vFaceEnts.append(DualVFMesh.FaceEnt())
-
     # ---------- Queries (almost 1:1 with C++) ----------
 
     def numVts(self) -> int:
@@ -102,8 +92,12 @@ class DualVFMesh:
 
     def newVtx(self, iVtx: int, iValence: int, uFlags: int = 0) -> bool:
         """Create/initialize vertex iVtx with given valence and flags."""
-        self._ensure_vtx_index(iVtx)
-        v = self._vVtxEnts[iVtx]
+        if iVtx != len(self._vVtxEnts):
+            raise AssertionError(
+                f"newVtx out of order: iVtx={iVtx} size={len(self._vVtxEnts)}"
+            )
+        self._vVtxEnts.append(DualVFMesh.VtxEnt())
+        v = self._vVtxEnts[-1]
 
         if v.cVal != iValence:
             v.cVal = iValence
@@ -116,12 +110,10 @@ class DualVFMesh:
         return True
 
     def setVtxGrp(self, iVtx: int, iVGrp: int) -> bool:
-        self._ensure_vtx_index(iVtx)
         self._vVtxEnts[iVtx].iVGrp = iVGrp
         return True
 
     def setVtxFlags(self, iVtx: int, uFlags: int) -> bool:
-        self._ensure_vtx_index(iVtx)
         self._vVtxEnts[iVtx].uFlags = uFlags
         return True
 
@@ -150,12 +142,12 @@ class DualVFMesh:
         uFaceAttrMask: int = 0,
         uFlags: int = 0,
     ) -> bool:
-        """
-        cDeg <= 64 case: attr mask is a 64-bit integer.
-        Equivalent to C++ newFace(..., UInt64 uFaceAttrMask, ...).
-        """
-        self._ensure_face_index(iFace)
-        f = self._vFaceEnts[iFace]
+        if iFace != len(self._vFaceEnts):
+            raise AssertionError(
+                f"newFace out of order: iFace={iFace} size={len(self._vFaceEnts)}"
+            )
+        self._vFaceEnts.append(DualVFMesh.FaceEnt())
+        f = self._vFaceEnts[-1]
 
         if f.cDeg != cDegree:
             f.cDeg = cDegree
@@ -182,12 +174,12 @@ class DualVFMesh:
         faceAttrMaskBits: List[bool],
         uFlags: int = 0,
     ) -> bool:
-        """
-        cDeg > 64 case: attr mask stored as list[bool] (BitVec).
-        Equivalent to C++ newFace(..., const BitVec*).
-        """
-        self._ensure_face_index(iFace)
-        f = self._vFaceEnts[iFace]
+        if iFace != len(self._vFaceEnts):
+            raise AssertionError(
+                f"newFace out of order: iFace={iFace} size={len(self._vFaceEnts)}"
+            )
+        self._vFaceEnts.append(DualVFMesh.FaceEnt())
+        f = self._vFaceEnts[-1]
 
         if f.cDeg != cDegree:
             f.cDeg = cDegree
@@ -206,7 +198,6 @@ class DualVFMesh:
         return True
 
     def setFaceFlags(self, iFace: int, uFlags: int) -> bool:
-        self._ensure_face_index(iFace)
         self._vFaceEnts[iFace].uFlags = uFlags
         return True
 
@@ -236,18 +227,28 @@ class DualVFMesh:
 
     def setVtxFace(self, iVtx: int, iFaceSlot: int, iFace: int) -> bool:
         v = self._vVtxEnts[iVtx]
-        self._viVtxFaceIndices[v.iVFI + iFaceSlot] = iFace
+        idx = v.iVFI + iFaceSlot
+        old = self._viVtxFaceIndices[idx]
+        print(
+            f"setVtxFace: vtx={iVtx} vslot={iFaceSlot} "
+            f"old_face={old} new_face={iFace}"
+        )
+        self._viVtxFaceIndices[idx] = iFace
         return True
 
     def setFaceVtx(self, iFace: int, iVtxSlot: int, iVtx: int) -> bool:
         f = self._vFaceEnts[iFace]
         idx = f.iFVI + iVtxSlot
         old = self._viFaceVtxIndices[idx]
-
-        # Decrease emptyDeg if we are filling a previously empty / different slot
+        if old != -1 and old != iVtx:
+            print(
+                f"ERROR: face {iFace} slot {iVtxSlot} overwrite "
+                f"old_vtx={old} new_vtx={iVtx}"
+            )
+            print("This is potentially wrong")
+            exit()
         if old != iVtx:
             f.cEmptyDeg -= 1
-
         self._viFaceVtxIndices[idx] = iVtx
         return True
 

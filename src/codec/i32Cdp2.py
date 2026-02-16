@@ -86,10 +86,7 @@ class I32CDP2:
         logger.debug(
             f"starting decode of {e_bytes.bytes[e_bytes.offset:e_bytes.offset+40].hex(' ')} ..."
         )
-        start_offset = e_bytes.offset
-        print(f"read_vec_i_32 BEFORE offset={start_offset}")
         value_count = struct.unpack("<i", e_bytes.read(4))[0]
-        print(f"read_vec_i_32 AFTER offset={e_bytes.offset} value_count={value_count}")
         if value_count <= 0:
             return []
 
@@ -102,8 +99,7 @@ class I32CDP2:
             logger.debug(f"{codec_type=}")
             chop_bits = struct.unpack("<B", e_bytes.read(1))[0]
             if chop_bits == 0:
-                decoded = cls.decode_bytes(e_bytes)
-                return decoded
+                return cls.decode_bytes(e_bytes)
             else:
                 value_bias, value_span_bits = struct.unpack("<iB", e_bytes.read(5))
                 chopped_msb_data = cls.decode_bytes(e_bytes)

@@ -2,16 +2,24 @@ import logging
 import struct
 import sys
 from dataclasses import dataclass
+from typing import Optional, List
 
 from codec.i32Cdp2 import I32CDP2, PredictorType
 from shape.topologicallyCompressedVertexRecords import TopologicallyCompressedVertexRecords
 from util import byteStream as bs
-from util.jt_hash import jt_hash32
+from util.jt_hash import jt_hash16, jt_hash32_ints
 from lsg.types import JtVersion
 from shape.dual_vf_mesh import DualVFMesh
-from typing import Optional, List
 
 logger = logging.getLogger(__name__)
+
+
+def _inc_mod(idx: int, mod: int) -> int:
+    return (idx + 1) % mod if mod > 0 else 0
+
+
+def _dec_mod(idx: int, mod: int) -> int:
+    return (idx - 1 + mod) % mod if mod > 0 else 0
 
 
 @dataclass
@@ -35,7 +43,7 @@ class TopologicallyCompressedRepData:
     To begin the decoding process, first read the compressed data fields shown in Figure 89. These fields provide
     all the information necessary to reconstruct the per face-group organized sets of triangles. The first 22 fields
     represent the topological information, and the remaining fields constitute the set of unique vertex records to be
-    used. The next step is to run the topological decoder algorithm detailed in Appendix E: Polygon Mesh Topology
+    used. The next step is to run the topological decoder algorithm detailed in Appendix E: tPolygon Mesh Topology
     Coder on this data to reconstruct the topologically connected representation of the triangle mesh in a so-called
     "dual VFMesh.' The triangles in this heavy-weight data structure can then be exported to a lighter-weight form,
     and the dual VFMesh discarded if desired.
@@ -54,52 +62,31 @@ class TopologicallyCompressedRepData:
     hash: int
     topologically_compressed_vertex_records: TopologicallyCompressedVertexRecords
 
-
     @classmethod
     def from_bytes(cls, e_bytes, version=JtVersion.V9d5):
-        print("creating from bytes")
-        print((e_bytes.bytes[e_bytes.offset:e_bytes.offset+800]).hex(" "))
-
-        def log_after(label: str):
-            offset = e_bytes.offset
-            remaining = e_bytes.remaining()
-            preview_len = 50 if remaining > 50 else remaining
-            preview = e_bytes.bytes[offset:offset + preview_len].hex(" ")
-            print(f"after {label}: offset={offset} remaining={remaining} next50={preview}")
-
-        def read_vec(label: str, predictor=PredictorType.PredNULL):
-            print(f"read_vec_i_32 {label} start_offset={e_bytes.offset}")
-            e_bytes.debug_read = True
-            out = I32CDP2.read_vec_i_32(e_bytes, predictor)
-            e_bytes.debug_read = False
-            print(f"read_vec_i_32 {label} end_offset={e_bytes.offset}")
-            log_after(label)
-            return out
+        logger.debug("creating from bytes")
+        logger.debug((e_bytes.bytes[e_bytes.offset : e_bytes.offset + 30]).hex(" "))
 
         face_degrees = []
-        for i in range(8):
-            face_degrees.append(read_vec(f"face_degrees[{i}]"))
+        for _ in range(8):
+            face_degrees.append(I32CDP2.read_vec_i_32(e_bytes))
 
-        vertex_valences = read_vec("vertex_valences")
-        vertex_groups = read_vec("vertex_groups")
-        vertex_flags = read_vec("vertex_flags", PredictorType.PredLag1)
+        vertex_valences = I32CDP2.read_vec_i_32(e_bytes)
+
+        vertex_groups = I32CDP2.read_vec_i_32(e_bytes)
+        vertex_flags = I32CDP2.read_vec_i_32(e_bytes, PredictorType.PredLag1)
 
         face_attribute_masks = []
-        for i in range(8):
-            face_attribute_masks.append(read_vec(f"face_attribute_masks[{i}]"))
-
-        face_attribute_masks8_30 = read_vec("face_attribute_masks8_30")
-        face_attribute_masks8_4 = read_vec("face_attribute_masks8_4")
+        for _ in range(8):
+            face_attribute_masks.append(I32CDP2.read_vec_i_32(e_bytes))
+        face_attribute_masks8_30 = I32CDP2.read_vec_i_32(e_bytes)
+        face_attribute_masks8_4 = I32CDP2.read_vec_i_32(e_bytes)
         high_degree_face_attribute_mask = bs.read_vec_i_32(e_bytes)
-        split_face_syms = read_vec("split_face_syms", PredictorType.PredLag1)
-        split_face_positions = read_vec("split_face_positions")
-
+        split_face_syms = I32CDP2.read_vec_i_32(e_bytes, PredictorType.PredLag1)
+        split_face_positions = I32CDP2.read_vec_i_32(e_bytes)
         read_hash = struct.unpack("<I", e_bytes.read(4))[0]
+        topologically_compressed_vertex_records = TopologicallyCompressedVertexRecords.from_bytes(e_bytes)
 
-        topologically_compressed_vertex_records = TopologicallyCompressedVertexRecords.from_bytes(
-            e_bytes
-        )
-        exit()
         return TopologicallyCompressedRepData(
             face_degrees,
             vertex_valences,
@@ -116,40 +103,48 @@ class TopologicallyCompressedRepData:
         )
 
     @classmethod
-    def compute_hash(cls, face_attribute_masks, face_attribute_masks8_30, face_attribute_masks8_4, face_degrees,
-                     high_degree_face_attribute_mask, split_face_positions, split_face_syms, vertex_flags,
-                     vertex_groups, vertex_valences):
+    def compute_hash(
+        cls,
+        face_attribute_masks,
+        face_attribute_masks8_30,
+        face_attribute_masks8_4,
+        face_degrees,
+        high_degree_face_attribute_mask,
+        split_face_positions,
+        split_face_syms,
+        vertex_flags,
+        vertex_groups,
+        vertex_valences,
+    ):
         comp_hash = 0
-        for fd in face_degrees[:-1]:
-            comp_hash = jt_hash32(fd, comp_hash)
-        comp_hash = jt_hash32(vertex_valences, comp_hash)
-        comp_hash = jt_hash32(vertex_groups, comp_hash)
-        comp_hash = jt_hash32(vertex_flags, comp_hash)
-        for am in face_attribute_masks:
-            comp_hash = jt_hash32(am, comp_hash)
-        comp_hash = jt_hash32(face_attribute_masks[7], comp_hash)
-        comp_hash = jt_hash32(face_attribute_masks8_30, comp_hash)
-        comp_hash = jt_hash32(face_attribute_masks8_4, comp_hash)
-        comp_hash = jt_hash32(high_degree_face_attribute_mask, comp_hash)
-        comp_hash = jt_hash32(split_face_syms, comp_hash)
-        comp_hash = jt_hash32(split_face_positions, comp_hash)
+        face_degrees = face_degrees or []
+        vertex_valences = vertex_valences or []
+        vertex_groups = vertex_groups or []
+        vertex_flags = vertex_flags or []
+        face_attribute_masks = face_attribute_masks or []
+        face_attribute_masks8_30 = face_attribute_masks8_30 or []
+        face_attribute_masks8_4 = face_attribute_masks8_4 or []
+        high_degree_face_attribute_mask = high_degree_face_attribute_mask or []
+        split_face_syms = split_face_syms or []
+        split_face_positions = split_face_positions or []
+
+        for fd in face_degrees[:8]:
+            comp_hash = jt_hash32_ints(fd or [], comp_hash)
+        comp_hash = jt_hash32_ints(vertex_valences, comp_hash)
+        comp_hash = jt_hash32_ints(vertex_groups, comp_hash)
+        comp_hash = jt_hash16(vertex_flags, comp_hash)
+
+        for i in range(min(7, len(face_attribute_masks))):
+            comp_hash = jt_hash32_ints(face_attribute_masks[i] or [], comp_hash)
+        if len(face_attribute_masks) > 7:
+            comp_hash = jt_hash32_ints(face_attribute_masks[7] or [], comp_hash)
+        comp_hash = jt_hash32_ints(face_attribute_masks8_30, comp_hash)
+        comp_hash = jt_hash32_ints(face_attribute_masks8_4, comp_hash)
+
+        comp_hash = jt_hash32_ints(high_degree_face_attribute_mask, comp_hash)
+        comp_hash = jt_hash32_ints(split_face_syms, comp_hash)
+        comp_hash = jt_hash32_ints(split_face_positions, comp_hash)
         return comp_hash
-
-
-class DecodedMesh:
-    """Container for decoded topology."""
-
-    def __init__(self, face_vertices: list[list[int]], vertex_count: int):
-        self.face_vertices = face_vertices
-        self.vertex_count = vertex_count
-
-
-def _inc_mod(idx: int, mod: int) -> int:
-    return (idx + 1) % mod if mod > 0 else 0
-
-
-def _dec_mod(idx: int, mod: int) -> int:
-    return (idx - 1 + mod) % mod if mod > 0 else 0
 
 
 class MeshCoderDriver:
@@ -163,33 +158,26 @@ class MeshCoderDriver:
         self._val_idx = 0
         self._grp_idx = 0
         self._flag_idx = 0
-        # Degree symbols are stored per-context (8 contexts)
         self._deg_idx = [0] * 8
-        self._use_flat_deg = False
         self._split_face_idx = 0
         self._split_pos_idx = 0
 
         self._val_stream = list(rep.vertex_valences or [])
         self._grp_stream = list(rep.vertex_groups or [])
         self._flag_stream = list(rep.vertex_flags or [])
-        # Normalize face degree streams to 8 context lists (spec stores 8 streams)
         if rep.face_degrees is None:
             self._deg_streams = [[] for _ in range(8)]
         else:
-            self._deg_streams = []
-            for ctx in range(8):
-                seq = rep.face_degrees[ctx] if ctx < len(rep.face_degrees) else []
-                self._deg_streams.append(list(seq or []))
-            if any(len(s) == 0 for s in self._deg_streams):
-                # Some contexts are empty; prefer a single flat stream to avoid stalls
-                self._use_flat_deg = True
+            self._deg_streams = [list(seq or []) for seq in rep.face_degrees]
+            if len(self._deg_streams) < 8:
+                self._deg_streams.extend([[] for _ in range(8 - len(self._deg_streams))])
+            elif len(self._deg_streams) > 8:
+                self._deg_streams = self._deg_streams[:8]
+
         self._empty_deg_contexts = [i for i, s in enumerate(self._deg_streams) if len(s) == 0]
         self._last_deg_context = None
         self._last_deg_symbol = None
         self._last_deg_source = "unset"
-        # Also keep a flat fallback stream if some contexts are empty
-        self._deg_flat_stream = self._flatten(rep.face_degrees)
-        self._deg_flat_idx = 0
 
         self._split_face_stream = list(rep.split_face_syms or [])
         self._split_pos_stream = list(rep.split_face_positions or [])
@@ -240,13 +228,9 @@ class MeshCoderDriver:
 
     def _faceCntxt(self, iVtx: int, vfm: DualVFMesh) -> int:
         cVal = vfm.valence(iVtx)
-        print(iVtx)
-        print(cVal)
         nKnownFaces = 0
         cKnownTotDeg = 0
-        j = 0
         for i in range(cVal):
-            j=j+1
             iTmpFace = vfm.face(iVtx, i)
             if not vfm.isValidFace(iTmpFace):
                 continue
@@ -261,53 +245,30 @@ class MeshCoderDriver:
             iCCntxt = 6
         else:
             iCCntxt = 7
-        if iCCntxt == 2:
-            print(
-                f"_faceCntxt==2: vtx={iVtx} valence={cVal} "
-                f"nKnownFaces={nKnownFaces} cKnownTotDeg={cKnownTotDeg}"
-            )
         return iCCntxt
 
     def _nextDegSymbol(self, _context: int = 0) -> int:
-        # If any context is empty, just drive from the flat stream to avoid stopping.
-        if self._use_flat_deg:
-            if self._deg_flat_idx < len(self._deg_flat_stream):
-                v = self._deg_flat_stream[self._deg_flat_idx]
-                self._deg_flat_idx += 1
-                self._last_deg_context = _context
-                self._last_deg_symbol = int(v)
-                self._last_deg_source = "flat"
-                return int(v)
-            self._last_deg_context = _context
-            self._last_deg_symbol = 0
-            self._last_deg_source = "flat-empty"
-            return 0
-
         if _context < 0 or _context >= len(self._deg_streams):
             self._last_deg_context = _context
-            self._last_deg_symbol = 0
+            self._last_deg_symbol = -1
             self._last_deg_source = "invalid-context"
-            return 0
+            return -1
+
         stream = self._deg_streams[_context]
         idx = self._deg_idx[_context]
+
         if idx < len(stream):
-            self._deg_idx[_context] = idx + 1
+            sym = int(stream[idx])
+            self._deg_idx[_context] = idx + 1  # advance
             self._last_deg_context = _context
-            self._last_deg_symbol = int(stream[idx])
+            self._last_deg_symbol = sym
             self._last_deg_source = "context"
-            return int(stream[idx])
-        # Fallback to flat stream when context stream is exhausted
-        if self._deg_flat_idx < len(self._deg_flat_stream):
-            v = self._deg_flat_stream[self._deg_flat_idx]
-            self._deg_flat_idx += 1
-            self._last_deg_context = _context
-            self._last_deg_symbol = int(v)
-            self._last_deg_source = "flat-fallback"
-            return int(v)
+            return sym
+
         self._last_deg_context = _context
-        self._last_deg_symbol = 0
+        self._last_deg_symbol = -1
         self._last_deg_source = "exhausted"
-        return 0
+        return -1
 
     def deg_debug(self) -> dict:
         return {
@@ -317,31 +278,41 @@ class MeshCoderDriver:
             "last_source": self._last_deg_source,
             "deg_idx": list(self._deg_idx),
             "deg_ctx_lens": [len(s) for s in self._deg_streams],
-            "deg_flat_idx": self._deg_flat_idx,
-            "deg_flat_len": len(self._deg_flat_stream),
         }
 
     def _nextAttrMaskSymbol(self, ctx: int):
         stream = self._attr_ctx_streams.get(ctx, [])
         idx = self._attr_ctx_idx.get(ctx, 0)
-        if idx >= len(stream):
-            return 0
+        val = int(stream[idx]) if idx < len(stream) else 0
+        if ctx == 7:
+            if idx < len(self.rep.face_attribute_masks8_30 or []):
+                val |= int(self.rep.face_attribute_masks8_30[idx]) << 30
+            if idx < len(self.rep.face_attribute_masks8_4 or []):
+                val |= int(self.rep.face_attribute_masks8_4[idx]) << 30
         self._attr_ctx_idx[ctx] = idx + 1
-        return int(stream[idx])
+        return val
 
-    def _nextAttrMaskSymbol_large(self) -> list[bool]:
-        if self._attr_large_idx >= len(self._attr_large_stream):
+    def _nextAttrMaskSymbol_large(self, degree: int) -> list[bool]:
+        if degree <= 0:
             return []
-        mask_val = int(self._attr_large_stream[self._attr_large_idx])
-        self._attr_large_idx += 1
-        bits = []
-        for bit in range(64):
-            bits.append(bool((mask_val >> bit) & 1))
+        n_words = (degree + 31) // 32
+        if self._attr_large_idx >= len(self._attr_large_stream):
+            return [False] * degree
+        words = []
+        for _ in range(n_words):
+            if self._attr_large_idx < len(self._attr_large_stream):
+                words.append(int(self._attr_large_stream[self._attr_large_idx]))
+            else:
+                words.append(0)
+            self._attr_large_idx += 1
+        bits: list[bool] = []
+        for i in range(degree):
+            word = words[i // 32]
+            bit = (word >> (i % 32)) & 1
+            bits.append(bool(bit))
         return bits
 
     def _nextSplitFaceSymbol(self) -> int:
-        print(self._split_face_stream)
-        exit()
         if self._split_face_idx >= len(self._split_face_stream):
             return -1
         v = self._split_face_stream[self._split_face_idx]
@@ -354,25 +325,32 @@ class MeshCoderDriver:
         v = self._split_pos_stream[self._split_pos_idx]
         self._split_pos_idx += 1
         return int(v)
-
-
 class _MeshCodec:
-    """Decode-side implementation of MeshCodec from the spec."""
-
     def __init__(self, driver: MeshCoderDriver):
         self._pTMC = driver
         self._pDstVFM: Optional[DualVFMesh] = None
+
+        # Active face list (stack-like; newest at end)
         self._viActiveFaces: List[int] = []
         self._removedActiveFaces: set[int] = set()
-        self._iFaceAttrCtr = 0
 
-    def run(self) -> DualVFMesh:
+        self._iFaceAttrCtr = 0
+        self._current_component_id = -1
+        self._face_component: dict[int, int] = {}
+        self._vtx_component: dict[int, int] = {}
+
+    def run(self, max_components: Optional[int] = None) -> DualVFMesh:
         if self._pDstVFM is None:
             self._pDstVFM = DualVFMesh()
         self._pDstVFM.clear()
         self.clear()
+
+        components_run = 0
         while True:
             if not self.runComponent():
+                break
+            components_run += 1
+            if max_components is not None and components_run >= max_components:
                 break
         return self._pDstVFM
 
@@ -380,15 +358,18 @@ class _MeshCodec:
         self._viActiveFaces.clear()
         self._removedActiveFaces.clear()
         self._iFaceAttrCtr = 0
+        self._current_component_id = -1
+        self._face_component.clear()
+        self._vtx_component.clear()
 
     def runComponent(self):
-        obFoundComponent = True
         obFoundComponent = self.initNewComponent()
         if not obFoundComponent:
             return False
+
         iFace = self.nextActiveFace()
         while iFace != -1:
-            self.completeF(iFace)
+            self.completeV(iFace)
             self.removeActiveFace(iFace)
             iFace = self.nextActiveFace()
         return True
@@ -397,81 +378,67 @@ class _MeshCodec:
         iVtx = self.ioVtxInit()
         if iVtx == -1:
             return False
+        self._current_component_id += 1
         cVal = self._pDstVFM.valence(iVtx)
         for i in range(cVal):
             iFace = self.activateF(iVtx, i)
             if iFace == -2:
                 raise RuntimeError("Mesh traversal failed")
         return True
+    def addActiveFace(self, iFace: int):
+        if iFace < 0:
+            return
+        if iFace in self._removedActiveFaces:
+            return
+        if iFace not in self._viActiveFaces:
+            # enqueue at end (newest)
+            self._viActiveFaces.append(iFace)
 
-    def completeF(self, iFace: int):
-        jVtxSlot = self._pDstVFM.findVtxSlot(iFace, -1)
-        iVSlot = 0
-        while jVtxSlot != -1:
-            iVtx = self.activateV(iFace, jVtxSlot)
-            if not (self._pDstVFM.vtx(iFace, jVtxSlot) == iVtx and self._pDstVFM.face(iVtx, iVSlot) == iFace):
-                raise RuntimeError("FV consistency failed")
-            self.completeV(iVtx, jVtxSlot)
-            jVtxSlot = self._pDstVFM.findVtxSlot(iFace, -1)
+    def nextActiveFace(self) -> int:
+        vfm = self._pDstVFM
+        if vfm is None:
+            return -1
+        # Scan last 16 faces (newest) for lowest empty degree
+        while self._viActiveFaces and self._viActiveFaces[-1] in self._removedActiveFaces:
+            popped_face = self._viActiveFaces.pop()
+            f = self._pDstVFM._vFaceEnts[popped_face]
 
-    def activateF(self, iVtx: int, iVSlot: int) -> int:
-        iFace = self.ioFace(iVtx, iVSlot)
-        if iFace >= 0:
-            if (
-                not self._pDstVFM.setVtxFace(iVtx, iVSlot, iFace)
-                or not self._pDstVFM.setFaceVtx(iFace, 0, iVtx)
-            ):
-                logger.error(
-                    "activateF setVtxFace/setFaceVtx failed: vtx=%d vslot=%d face=%d",
-                    iVtx,
-                    iVSlot,
-                    iFace,
-                )
-                return -2
-            self.addActiveFace(iFace)
-        elif iFace == -1:
-            print(f"activateF: use existing face (split) vtx={iVtx} vslot={iVSlot}")
-            # iVtx = 74, iVSlot = 2
-            iFace = self.ioSplitFace(iVtx, iVSlot)
-            print(iFace)
-            jFSlot = self.ioSplitPos(iVtx, iVSlot)
-            print(iVtx)
-            exit()
-            if iFace == -2 or jFSlot == -1:
-                logger.error(
-                    "activateF split failed: vtx=%d vslot=%d split_face=%d split_pos=%d",
-                    iVtx,
-                    iVSlot,
-                    iFace,
-                    jFSlot,
-                )
-                print(
-                    f"split-face failure: vtx={iVtx} vslot={iVSlot} "
-                    f"split_face={iFace} split_pos={jFSlot}"
-                )
-                sys.exit(1)
-                return -2
-            # if split target missing, skip gracefully
-            if iFace == -1:
-                return -1
-            self._pDstVFM.setVtxFace(iVtx, iVSlot, iFace)
-            self.addVtxToFace(iVtx, iVSlot, iFace, jFSlot)
-        return iFace
+        lowest_empty = 1_000_000_000
+        chosen = -1
+        width = 16
+        start = max(0, len(self._viActiveFaces) - width)
 
-    def activateV(self, iFace: int, iVSlot: int) -> int:
-        iVtx = self.ioVtx(iFace, iVSlot)
-        self._pDstVFM.setVtxFace(iVtx, 0, iFace)
-        self.addVtxToFace(iVtx, 0, iFace, iVSlot)
-        return iVtx
+        i = len(self._viActiveFaces) - 1
+        while i >= start:
+            f = self._viActiveFaces[i]
+            if f in self._removedActiveFaces:
+                del self._viActiveFaces[i]
+                i -= 1
+                continue
 
-    def completeV(self, iVtx: int, iVSlot: int):
+            empty_deg = vfm.emptyFaceSlots(f)
+            if empty_deg < lowest_empty:
+                lowest_empty = empty_deg
+                chosen = f
+
+            i -= 1
+
+        return chosen
+
+    def removeActiveFace(self, iFace: int):
+        self._removedActiveFaces.add(iFace)
+
+    def completeF(self, iVtx: int, iVSlot: int):
         vfm = self._pDstVFM
         cVal = vfm.valence(iVtx)
 
-        # CCW
+        # Walk CCW from face slot 0, attempting to link in as many
+        # already-reachable faces as possible until we reach one
+        # that is inactive.
         vp = vfm.face(iVtx, 0)
         jp = iVSlot
         i = 1
+
         while True:
             vn = vfm.face(iVtx, i)
             if vn == -1:
@@ -491,10 +458,14 @@ class _MeshCodec:
             if i >= cVal:
                 return
 
+        # Walk CW from face slot 0, attempting to link in as many
+        # already-reachable faces as possible until we reach one
+        # that is inactive
         ilast = i
         vp = vfm.face(iVtx, 0)
         jp = iVSlot
         i = vfm.valence(iVtx) - 1
+
         while True:
             vn = vfm.face(iVtx, i)
             if vn == -1:
@@ -514,6 +485,7 @@ class _MeshCodec:
             if i < ilast:
                 return
 
+        # Activate remaining faces
         for k in range(ilast, i + 1):
             iFace = self.activateF(iVtx, k)
             if iFace < -1:
@@ -526,22 +498,106 @@ class _MeshCodec:
                     cVal,
                     debug,
                 )
-                print(f"Degree stream debug: {debug}")
 
+    def activateF(self, iVtx: int, iVSlot: int) -> int:
+        if iVtx < 0:
+            return -1
+        iFace = self.ioFace(iVtx, iVSlot)
+        if iFace >= 0:
+            if (
+                    not self._pDstVFM.setVtxFace(iVtx, iVSlot, iFace)
+                    or not self._pDstVFM.setFaceVtx(iFace, 0, iVtx)
+            ):
+                logger.error(
+                    "activateF setVtxFace/setFaceVtx failed: vtx=%d vslot=%d face=%d",
+                    iVtx,
+                    iVSlot,
+                    iFace,
+                )
+
+                # Output last 16 initialized faces
+                logger.error("Last 16 initialized faces:")
+                num_faces = self._pDstVFM.numFaces()
+                start_face = max(0, num_faces - 16)
+
+                for i in range(start_face, num_faces):
+                    if self._pDstVFM.isValidFace(i):
+                        f = self._pDstVFM._vFaceEnts[i]
+                        logger.error(
+                            "  Face %d: cDeg=%d, iFVI=%d, cEmptyDeg=%d, cFaceAttrs=%d",
+                            i,
+                            f.cDeg,
+                            f.iFVI,
+                            f.cEmptyDeg,
+                            f.cFaceAttrs,
+                        )
+                    else:
+                        logger.error("  Face %d: INVALID", i)
+                return -2
+            self.addActiveFace(iFace)
+            return iFace
+        # Reuse/split face path
+        iSplitFace = self.ioSplitFace(iVtx, iVSlot)
+        if iSplitFace < 0:
+            return -1
+        iSplitPos = self.ioSplitPos(iVtx, iVSlot)
+        if iSplitPos < 0:
+            return -1
+
+        self._pDstVFM.setVtxFace(iVtx, iVSlot, iSplitFace)
+        self.addVtxToFace(iVtx, iVSlot, iSplitFace, iSplitPos)
+        return iSplitFace
+
+    def activateV(self, iFace: int, iVSlot: int) -> int:
+        iVtx = self.ioVtx(iFace, iVSlot)
+        if iVtx == -1:
+            return -1
+        self._pDstVFM.setVtxFace(iVtx, 0, iFace)
+        self.addVtxToFace(iVtx, 0, iFace, iVSlot)
+        return iVtx
+
+    def completeV(self, iFace: int):
+        """
+        Completes the VFMesh face iFace by calling activateV() and
+        completeF() for each as-yet inactive incident vertices in the face's
+        degree ring.
+        """
+        vfm = self._pDstVFM
+
+        # While there is an empty vertex slot on the face
+        iVSlot = 0
+        while True:
+            # Find next empty vertex slot (-1) on this face
+            jVtxSlot = vfm.findVtxSlot(iFace, -1)
+            if jVtxSlot == -1:
+                break
+
+            # Create and return a vertex iVtx, attaching it to iFace at vertex slot jVtxSlot
+            iVtx = self.activateV(iFace, jVtxSlot)
+
+            # Assert FV consistency
+            assert vfm.vtx(iFace, jVtxSlot) == iVtx and vfm.face(iVtx, iVSlot) == iFace, \
+                f"FV consistency error: face {iFace} slot {jVtxSlot} -> vtx {iVtx}, " \
+                f"vtx {iVtx} slot {iVSlot} -> face {vfm.face(iVtx, iVSlot)}"
+
+            # Process the faces of iVtx starting from face slot jVtxSlot
+            # where iVtx is incident on iFace
+            self.completeF(iVtx, jVtxSlot)
+
+            # Invariant "VF": vertex(iVtx).face(iVSlot) == iFace &&
+            # face(iFace).vtx(jVtxSlot) == iVtx
     def addVtxToFace(self, iVtx: int, jFSlot: int, iFace: int, iVSlot: int):
         vfm = self._pDstVFM
-        iVSlotCW = iVSlot
-        iVSlotCCW = iVSlot
-        iVSlotCCW = _inc_mod(iVSlotCCW, vfm.degree(iFace))
-        iVSlotCW = _dec_mod(iVSlotCW, vfm.degree(iFace))
+
+        iVSlotCCW = _inc_mod(iVSlot, vfm.degree(iFace))
+        iVSlotCW = _dec_mod(iVSlot, vfm.degree(iFace))
 
         vfm.setFaceVtx(iFace, iVSlot, iVtx)
 
         fp = vfm.vtx(iFace, iVSlotCW)
         if fp != -1:
             ip = vfm.findFaceSlot(fp, iFace)
-            iVSlotCCW_loc = jFSlot
-            iVSlotCCW_loc = _inc_mod(iVSlotCCW_loc, vfm.valence(iVtx))
+            iVSlotCCW_loc = _inc_mod(jFSlot, vfm.valence(iVtx))
             if vfm.face(iVtx, iVSlotCCW_loc) == -1:
                 ip = _dec_mod(ip, vfm.valence(fp))
                 vfm.setVtxFace(iVtx, iVSlotCCW_loc, vfm.face(fp, ip))
@@ -549,42 +605,22 @@ class _MeshCodec:
         fn = vfm.vtx(iFace, iVSlotCCW)
         if fn != -1:
             inn = vfm.findFaceSlot(fn, iFace)
-            iVSlotCW_loc = jFSlot
-            iVSlotCW_loc = _dec_mod(iVSlotCW_loc, vfm.valence(iVtx))
+            iVSlotCW_loc = _dec_mod(jFSlot, vfm.valence(iVtx))
             if vfm.face(iVtx, iVSlotCW_loc) == -1:
                 inn = _inc_mod(inn, vfm.valence(fn))
                 vfm.setVtxFace(iVtx, iVSlotCW_loc, vfm.face(fn, inn))
 
-    def addActiveFace(self, iFace: int):
-        self._viActiveFaces.append(iFace)
-
-    def nextActiveFace(self) -> int:
-        while self._viActiveFaces and self._viActiveFaces[-1] in self._removedActiveFaces:
-            self._viActiveFaces.pop()
-
-        iFace = -1
-        cLowestEmptyDegree = 9999999
-        width = 16
-        vfm = self._pDstVFM
-        for idx in range(len(self._viActiveFaces) - 1, max(-1, len(self._viActiveFaces) - width), -1):
-            iFace0 = self._viActiveFaces[idx]
-            if iFace0 in self._removedActiveFaces:
-                self._viActiveFaces.pop(idx)
-                continue
-            cEmpty = vfm.emptyFaceSlots(iFace0)
-            if cEmpty < cLowestEmptyDegree:
-                cLowestEmptyDegree = cEmpty
-                iFace = iFace0
-        return iFace
-
-    def removeActiveFace(self, iFace: int):
-        self._removedActiveFaces.add(iFace)
-
+    # -------------------------
+    # Active face offset mapping (from end)
+    # -------------------------
     def activeFaceOffset(self, iFace: int) -> int:
-        cLen = len(self._viActiveFaces)
-        for idx in range(cLen - 1, -1, -1):
-            if self._viActiveFaces[idx] == iFace:
-                return cLen - idx
+        """
+        Offset from the end: 1 = newest (back), len = oldest (front).
+        """
+        c_len = len(self._viActiveFaces)
+        for i in range(c_len - 1, -1, -1):
+            if self._viActiveFaces[i] == iFace:
+                return c_len - i
         return -1
 
     def ioVtxInit(self) -> int:
@@ -596,94 +632,166 @@ class _MeshCodec:
         if eSym > -1:
             iVtx = self._pDstVFM.numVts()
             self._pDstVFM.newVtx(iVtx, eSym)
+            self._vtx_component[iVtx] = self._current_component_id
             self._pDstVFM.setVtxGrp(iVtx, self._pTMC._nextFGrpSymbol())
             self._pDstVFM.setVtxFlags(iVtx, self._pTMC._nextVtxFlagSymbol())
         return iVtx
 
     def ioFace(self, iVtx: int, _jFSlot: int) -> int:
+        if iVtx < 0:
+            return -1
         iCntxt = self._pTMC._faceCntxt(iVtx, self._pDstVFM)
         eSym = self._pTMC._nextDegSymbol(iCntxt)
-        print(f"ioFace: vtx={iVtx} ctx={iCntxt} deg_symbol={eSym}")
-        iFace = -1
-        if eSym != 0:
-            iFace = self._pDstVFM.numFaces()
-            cDeg = eSym
-            print(f"ioFace: create new face={iFace} degree={cDeg}")
-            nFaceAttrs = 0
-            if cDeg <= DualVFMesh.cMBits:
-                uAttrMask = self._pTMC._nextAttrMaskSymbol(
-                    max(0, min(7, cDeg - 2))
-                )
-                mask = int(uAttrMask)
-                uMask = mask
-                while uMask:
-                    nFaceAttrs += uMask & 1
-                    uMask >>= 1
-                self._pDstVFM.newFace_smallMask(iFace, cDeg, nFaceAttrs, mask, 0)
-            else:
-                vbAttrMask = self._pTMC._nextAttrMaskSymbol_large()
-                for bit in vbAttrMask:
-                    if bit:
-                        nFaceAttrs += 1
-                self._pDstVFM.newFace_bigMask(iFace, cDeg, nFaceAttrs, vbAttrMask, 0)
+        if eSym == 0:
+            return -1
+        iFace = self._pDstVFM.numFaces()
+        cDeg = eSym
+        nFaceAttrs = 0
 
-            if nFaceAttrs > cDeg:
-                logger.warning(
-                    "Corrupt face attribute mask: %d attrs > degree %d; clamping",
-                    nFaceAttrs,
-                    cDeg,
-                )
-                nFaceAttrs = min(nFaceAttrs, cDeg)
+        if cDeg <= DualVFMesh.cMBits:
+            uAttrMask = self._pTMC._nextAttrMaskSymbol(max(0, min(7, cDeg - 2)))
+            mask = int(uAttrMask)
+            uMask = mask
+            while uMask:
+                nFaceAttrs += uMask & 1
+                uMask >>= 1
+            self._pDstVFM.newFace_smallMask(iFace, cDeg, nFaceAttrs, mask, 0)
+        else:
+            vbAttrMask = self._pTMC._nextAttrMaskSymbol_large(cDeg)
+            for bit in vbAttrMask:
+                if bit:
+                    nFaceAttrs += 1
+            self._pDstVFM.newFace_bigMask(iFace, cDeg, nFaceAttrs, vbAttrMask, 0)
 
-            for iAttrSlot in range(nFaceAttrs):
-                self._pDstVFM.setFaceAttr(iFace, iAttrSlot, self._iFaceAttrCtr)
-                self._iFaceAttrCtr += 1
-        if(iFace == -1):
-            print(eSym)
-            print(iFace)
+        self._face_component[iFace] = self._current_component_id
+
+        if nFaceAttrs > cDeg:
+            logger.warning(
+                "Corrupt face attribute mask: %d attrs > degree %d; clamping",
+                nFaceAttrs,
+                cDeg,
+            )
+            nFaceAttrs = min(nFaceAttrs, cDeg)
+
+        for iAttrSlot in range(nFaceAttrs):
+            self._pDstVFM.setFaceAttr(iFace, iAttrSlot, self._iFaceAttrCtr)
+            self._iFaceAttrCtr += 1
+
         return iFace
 
     def ioSplitFace(self, _iVtx: int, _jFSlot: int) -> int:
+        """
+        Split offset is from the end of the active list:
+          1 = newest (back), len = oldest (front).
+        """
         eSym = self._pTMC._nextSplitFaceSymbol()
         if eSym < 0:
             return eSym
-        iOffset = eSym
+
+        iOffset = int(eSym)
         cLen = len(self._viActiveFaces)
         if iOffset <= 0 or iOffset > cLen:
             logger.warning("Corrupt split face offset %d (len=%d); skipping", iOffset, cLen)
             return -1
+
         return self._viActiveFaces[cLen - iOffset]
 
     def ioSplitPos(self, _iVtx: int, _jFSlot: int) -> int:
-        eSym = self._pTMC._nextSplitPosSymbol()
-        return eSym
+        return self._pTMC._nextSplitPosSymbol()
+
+    def component_maps(self) -> tuple[dict[int, int], dict[int, int]]:
+        return self._face_component, self._vtx_component
+
+
+class DecodedMesh:
+    """Container for decoded topology."""
+    def __init__(
+        self,
+        face_vertices: list[list[int]],
+        vertex_count: int,
+        face_attr_indices: list[list[int]] = None,
+    ):
+        self.face_vertices = face_vertices
+        self.vertex_count = vertex_count
+        self.face_attr_indices = face_attr_indices or []
+
+
+@dataclass
+class DecodedMeshComponent:
+    component_id: int
+    face_vertices: list[list[int]]
+    vertex_ids: list[int]
 
 
 class MeshDecoder:
     """Decoder facade exposing decode() -> DecodedMesh."""
-
     def __init__(self, rep_data: TopologicallyCompressedRepData):
         self.rep_data = rep_data
         self.driver = MeshCoderDriver(rep_data)
 
-    def decode(self) -> DecodedMesh:
+    def decode(self, max_components: Optional[int] = None) -> DecodedMesh:
         codec = _MeshCodec(self.driver)
-        vfm = codec.run()
+        vfm = codec.run(max_components=max_components)
 
         face_vertices: List[List[int]] = []
-        for i in range(vfm.numFaces()):
-            deg = vfm.degree(i)
-            verts = [vfm.vtx(i, slot) for slot in range(deg)]
+        face_attr_indices: List[List[int]] = []
+
+        # The DualVFMesh stores the dual representation
+        for iVtx in range(vfm.numVts()):
+            if vfm.vtxGrp(iVtx) < 0:
+                continue
+            valence = vfm.valence(iVtx)
+
+            # Get incident faces
+            verts = [vfm.face(iVtx, slot) for slot in range(valence)]
             face_vertices.append(verts)
+            corner_attrs = [-1] * valence
+            face_attr_indices.append(corner_attrs)
 
-        vertex_records = self.rep_data.topologically_compressed_vertex_records
-        vertex_count = getattr(
-            vertex_records, "number_of_topological_vertices", vfm.numVts()
-        ) or vfm.numVts()
+        # The vertex count is the number of faces in the dual mesh
+        vertex_count = vfm.numFaces()
 
-        logger.info(
-            "Decoded mesh (topology coder): %d faces, %d vertices",
-            len(face_vertices),
-            vertex_count,
-        )
-        return DecodedMesh(face_vertices, vertex_count)
+        logger.info("Decoded mesh (topology coder): %d faces, %d vertices", len(face_vertices), vertex_count)
+        return DecodedMesh(face_vertices, vertex_count, face_attr_indices)
+
+    def decode_components(
+        self,
+        max_components: Optional[int] = None,
+        remap_vertices: bool = False,
+    ) -> list[DecodedMeshComponent]:
+        codec = _MeshCodec(self.driver)
+        vfm = codec.run(max_components=max_components)
+
+        face_comp, _vtx_comp = codec.component_maps()
+        if not face_comp:
+            return []
+
+        component_ids = sorted(set(face_comp.values()))
+        components: list[DecodedMeshComponent] = []
+
+        for cid in component_ids:
+            face_indices = [i for i, c in face_comp.items() if c == cid]
+            face_vertices = []
+            vertex_ids_set = set()
+
+            for iFace in face_indices:
+                deg = vfm.degree(iFace)
+                verts = [vfm.vtx(iFace, slot) for slot in range(deg)]
+                face_vertices.append(verts)
+                vertex_ids_set.update(verts)
+
+            vertex_ids = sorted(v for v in vertex_ids_set if v is not None and v >= 0)
+
+            if remap_vertices:
+                remap = {v: idx for idx, v in enumerate(vertex_ids)}
+                face_vertices = [[remap[v] for v in face if v in remap] for face in face_vertices]
+
+            components.append(
+                DecodedMeshComponent(
+                    component_id=cid,
+                    face_vertices=face_vertices,
+                    vertex_ids=vertex_ids,
+                )
+            )
+
+        return components

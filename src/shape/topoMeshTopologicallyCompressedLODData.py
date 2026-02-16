@@ -19,6 +19,8 @@ class TopoMeshTopologicallyCompressedLODData:
 
     @classmethod
     def from_bytes(cls, e_bytes, version=JtVersion.V9d5):
+        preview_len = 64 if e_bytes.remaining() >= 64 else e_bytes.remaining()
+        preview = e_bytes.bytes[e_bytes.offset:e_bytes.offset + preview_len].hex(" ")
         topo_mesh_lod_data = TopoMeshLODData.from_bytes(
             e_bytes, version=version)
         if version == JtVersion.V9d5:
@@ -32,4 +34,6 @@ class TopoMeshTopologicallyCompressedLODData:
         topo_mesh_compressed_rep_data = TopologicallyCompressedRepData.from_bytes(
             e_bytes, version=version)
 
+        preview_len = 64 if e_bytes.remaining() >= 64 else e_bytes.remaining()
+        preview = e_bytes.bytes[e_bytes.offset:e_bytes.offset + preview_len].hex(" ")
         return TopoMeshCompressedLODData(topo_mesh_lod_data, version_number, topo_mesh_compressed_rep_data)

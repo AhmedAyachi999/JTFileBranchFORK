@@ -15,15 +15,9 @@ class ByteStream:
             start = self.offset
             if self.offset + length >= len(self.bytes):
                 data = self.bytes[self.offset:]
-                print(
-                    f"ByteStream.read offset={start} length={length} data={data.hex(' ')}"
-                )
                 return data
             data = self.bytes[self.offset: self.offset + length]
             self.offset += length
-            print(
-                f"ByteStream.read offset={start} length={length} data={data.hex(' ')}"
-            )
             return data
         if self.offset + length >= len(self.bytes):
             return self.bytes[self.offset:]

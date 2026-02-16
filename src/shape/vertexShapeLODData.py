@@ -48,7 +48,7 @@ class VertexShapeLODData:
         Bits  1-3:
             Vertex Coordinate Binding. The Vertex Coordinate Binding denotes per vertex coordinate field 
             data is present when one of the bits is set.
-            
+
             Bit 1: 2 Component Vertex Coordinates,
             Bit 2: 3 Component Vertex Coordinates,
             Bit 3: 4 Component Vertex Coordinates,
@@ -58,7 +58,7 @@ class VertexShapeLODData:
         Bits 5-6:
             Color Binding. The Color Binding denotes per vertex color field data is present when one of the 
             bits is set.
-            
+
             Bit 5: 3 Component Colors,
             Bit 6: 4 Component Color
         Bit 7:
@@ -67,7 +67,7 @@ class VertexShapeLODData:
         Bits 9-12:
             Texture Coordinate 0 Binding. The Texture Coordinate 0 binding denotes per vertex texture 
             coordinates field data is present when one of the bits is set:
-            
+
             Bit  9: 1 Component Texture Coordinates
             Bit 10: 2 Component Texture Coordinates
             Bit 11: 3 Component Texture Coordinates
@@ -75,7 +75,7 @@ class VertexShapeLODData:
         Bits 13-16:
             Texture Coordinate 1 Binding. The Texture Coordinate 1 binding denotes per vertex texture coordinates field 
             data is present when one of the bits is set:
-            
+
             Bit 13: 1 Component Texture Coordinates
             Bit 14: 2 Component Texture Coordinates
             Bit 15: 3 Component Texture Coordinates
@@ -83,7 +83,7 @@ class VertexShapeLODData:
         Bits 17-20:
             Texture Coordinate 2 Binding. The Texture Coordinate 2 binding denotes per vertex texture coordinates field 
             data is present when one of the bits is set:
-            
+
             Bit 17: 1 Component Texture Coordinates
             Bit 18: 2 Component Texture Coordinates
             Bit 19: 3 Component Texture Coordinates
@@ -91,7 +91,7 @@ class VertexShapeLODData:
         Bits 21-24:
             Texture Coordinate 3 Binding. The Texture Coordinate 3 binding denotes per vertex texture coordinates field 
             data is present when one of the bits is set:
-            
+
             Bit 21: 1 Component Texture Coordinates
             Bit 22: 2 Component Texture Coordinates
             Bit 23: 3 Component Texture Coordinates
@@ -99,7 +99,7 @@ class VertexShapeLODData:
         Bits 25-28:
             Texture Coordinate 4 Binding. The Texture Coordinate 4 binding denotes per vertex texture coordinates field 
             data is present when one of the bits is set:
-            
+
             Bit 25: 1 Component Texture Coordinates
             Bit 26: 2 Component Texture Coordinates
             Bit 27: 3 Component Texture Coordinates
@@ -107,7 +107,7 @@ class VertexShapeLODData:
         Bits 29-32:
             Texture Coordinate 5 Binding. The Texture Coordinate 5 binding denotes per vertex texture coordinates field 
             data is present when one of the bits is set:
-            
+
             Bit 29: 1 Component Texture Coordinates
             Bit 30: 2 Component Texture Coordinates
             Bit 31: 3 Component Texture Coordinates
@@ -115,7 +115,7 @@ class VertexShapeLODData:
         Bits 33-36:
             Texture Coordinate 6 Binding. The Texture Coordinate 6 binding denotes per vertex texture coordinates field 
             data is present when one of the bits is set:
-            
+
             Bit 33: 1 Component Texture Coordinates
             Bit 34: 2 Component Texture Coordinates
             Bit 35: 3 Component Texture Coordinates
@@ -123,7 +123,7 @@ class VertexShapeLODData:
         Bits 37-40:
             Texture Coordinate 7 Binding. The Texture Coordinate 7 binding denotes per vertex texture coordinates field 
             data is present when one of the bits is set:
-            
+
             Bit 37: 1 Component Texture Coordinates
             Bit 38: 2 Component Texture Coordinates
             Bit 39: 3 Component Texture Coordinates
@@ -135,7 +135,8 @@ class VertexShapeLODData:
 
         if version == JtVersion.V10d5:
             _ = ElementHeader.from_bytes(e_bytes)
-        elif version == JtVersion.V9d5: e_bytes.read(2)
+        elif version == JtVersion.V9d5:
+            e_bytes.read(2)
         if shape == "Tri-Strip":
             topo_mesh_compressed_lod_data = TopoMeshTopologicallyCompressedLODData.from_bytes(
                 e_bytes, version=version)
