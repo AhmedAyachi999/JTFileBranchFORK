@@ -11,18 +11,9 @@ class ByteStream:
         self.debug_read = debug_read
 
     def read(self, length: int):
-        if getattr(self, "debug_read", False):
-            start = self.offset
-            if self.offset + length >= len(self.bytes):
-                data = self.bytes[self.offset:]
-                return data
-            data = self.bytes[self.offset: self.offset + length]
-            self.offset += length
-            return data
-        if self.offset + length >= len(self.bytes):
-            return self.bytes[self.offset:]
-        data = self.bytes[self.offset: self.offset + length]
-        self.offset += length
+        end = min(self.offset + length, len(self.bytes))
+        data = self.bytes[self.offset:end]
+        self.offset = end
         return data
 
     def get(self, index: int):

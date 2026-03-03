@@ -245,6 +245,7 @@ class MeshCoderDriver:
             iCCntxt = 6
         else:
             iCCntxt = 7
+        print(f"[faceCntxt] vtx={iVtx} cVal={cVal} nKnownFaces={nKnownFaces} cKnownTotDeg={cKnownTotDeg} ctx={iCCntxt}")
         return iCCntxt
 
     def _nextDegSymbol(self, _context: int = 0) -> int:
@@ -490,19 +491,17 @@ class _MeshCodec:
             iFace = self.activateF(iVtx, k)
             if iFace < -1:
                 debug = self._pTMC.deg_debug()
-                logger.error(
-                    "activateF failed in completeV: vtx=%d vslot=%d k=%d valence=%d deg_debug=%s",
-                    iVtx,
-                    iVSlot,
-                    k,
-                    cVal,
-                    debug,
+                raise RuntimeError(
+                    "Mesh traversal failed in completeF: "
+                    f"vtx={iVtx} vslot={iVSlot} k={k} valence={cVal} deg_debug={debug}"
                 )
 
     def activateF(self, iVtx: int, iVSlot: int) -> int:
         if iVtx < 0:
             return -1
         iFace = self.ioFace(iVtx, iVSlot)
+        if iFace == -2:
+            return -2
         if iFace >= 0:
             if (
                     not self._pDstVFM.setVtxFace(iVtx, iVSlot, iFace)
@@ -535,6 +534,7 @@ class _MeshCodec:
                         logger.error("  Face %d: INVALID", i)
                 return -2
             self.addActiveFace(iFace)
+            self._debug_activated_face(iFace)
             return iFace
         # Reuse/split face path
         iSplitFace = self.ioSplitFace(iVtx, iVSlot)
@@ -546,6 +546,7 @@ class _MeshCodec:
 
         self._pDstVFM.setVtxFace(iVtx, iVSlot, iSplitFace)
         self.addVtxToFace(iVtx, iVSlot, iSplitFace, iSplitPos)
+        self._debug_activated_face(iSplitFace)
         return iSplitFace
 
     def activateV(self, iFace: int, iVSlot: int) -> int:
@@ -555,6 +556,15 @@ class _MeshCodec:
         self._pDstVFM.setVtxFace(iVtx, 0, iFace)
         self.addVtxToFace(iVtx, 0, iFace, iVSlot)
         return iVtx
+
+    def _debug_activated_face(self, iFace: int) -> None:
+        vfm = self._pDstVFM
+        if vfm is None or iFace < 0 or not vfm.isValidFace(iFace):
+            return
+        deg = vfm.degree(iFace)
+        slots = [vfm.vtx(iFace, s) for s in range(deg)]
+        print(f"Activated face {iFace} slots: {slots}")
+        print(f"Activated face {iFace} degree: {deg}")
 
     def completeV(self, iFace: int):
         """
@@ -576,9 +586,11 @@ class _MeshCodec:
             iVtx = self.activateV(iFace, jVtxSlot)
 
             # Assert FV consistency
-            assert vfm.vtx(iFace, jVtxSlot) == iVtx and vfm.face(iVtx, iVSlot) == iFace, \
-                f"FV consistency error: face {iFace} slot {jVtxSlot} -> vtx {iVtx}, " \
-                f"vtx {iVtx} slot {iVSlot} -> face {vfm.face(iVtx, iVSlot)}"
+            if not (vfm.vtx(iFace, jVtxSlot) == iVtx and vfm.face(iVtx, iVSlot) == iFace):
+                raise RuntimeError(
+                    f"FV consistency error: face {iFace} slot {jVtxSlot} -> vtx {iVtx}, "
+                    f"vtx {iVtx} slot {iVSlot} -> face {vfm.face(iVtx, iVSlot)}"
+                )
 
             # Process the faces of iVtx starting from face slot jVtxSlot
             # where iVtx is incident on iFace
@@ -642,6 +654,8 @@ class _MeshCodec:
             return -1
         iCntxt = self._pTMC._faceCntxt(iVtx, self._pDstVFM)
         eSym = self._pTMC._nextDegSymbol(iCntxt)
+        if eSym < 0:
+            return -2
         if eSym == 0:
             return -1
         iFace = self._pDstVFM.numFaces()

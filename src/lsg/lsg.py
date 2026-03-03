@@ -68,12 +68,21 @@ class LSG:
                 # TODO: DO SOMETHING FOR V10.5
             self.nodes[object_id].properties[key] = val
 
-    def ascii_lsg_tree(self):
-        def string_for_node(node: LSGNode, depth=0, max_depth=sys.maxsize):
+    def ascii_lsg_tree(self, max_depth: int = 50):
+        def string_for_node(node: LSGNode, depth=0, seen=None):
+            if seen is None:
+                seen = set()
             node_str = "  " + depth * "|     " + "|-- " + f"{str(node)}"
-            if len(node.child_node_object_id) == 0 or depth > max_depth:
+            if depth >= max_depth:
+                return node_str + " [max_depth]"
+            node_id = getattr(node, "object_id", None)
+            if node_id is not None:
+                if node_id in seen:
+                    return node_str + " [cycle]"
+                seen.add(node_id)
+            if len(node.child_node_object_id) == 0:
                 return node_str
-            child_str = [string_for_node(c, depth + 1) for c in node.child_nodes]
+            child_str = [string_for_node(c, depth + 1, seen.copy()) for c in node.child_nodes]
             child_str = "".join((f"{cs}" for cs in child_str))
             return f"{node_str}\n" + child_str
 

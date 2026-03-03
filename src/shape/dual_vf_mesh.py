@@ -229,10 +229,7 @@ class DualVFMesh:
         v = self._vVtxEnts[iVtx]
         idx = v.iVFI + iFaceSlot
         old = self._viVtxFaceIndices[idx]
-        print(
-            f"setVtxFace: vtx={iVtx} vslot={iFaceSlot} "
-            f"old_face={old} new_face={iFace}"
-        )
+        # Debug logging removed to avoid flooding stdout during decode.
         self._viVtxFaceIndices[idx] = iFace
         return True
 
@@ -240,13 +237,7 @@ class DualVFMesh:
         f = self._vFaceEnts[iFace]
         idx = f.iFVI + iVtxSlot
         old = self._viFaceVtxIndices[idx]
-        if old != -1 and old != iVtx:
-            print(
-                f"ERROR: face {iFace} slot {iVtxSlot} overwrite "
-                f"old_vtx={old} new_vtx={iVtx}"
-            )
-            print("This is potentially wrong")
-            exit()
+        # Overwrite can happen during topology completion; keep behavior aligned with C++.
         if old != iVtx:
             f.cEmptyDeg -= 1
         self._viFaceVtxIndices[idx] = iVtx

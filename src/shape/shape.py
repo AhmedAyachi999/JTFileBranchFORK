@@ -51,3 +51,35 @@ class ShapeLod0(Shape):
 
 class ShapeLod1(Shape):
     SEGMENT_TYPE_ID = 8
+
+
+class ShapeLod2(Shape):
+    SEGMENT_TYPE_ID = 9
+
+
+class ShapeLod3(Shape):
+    SEGMENT_TYPE_ID = 10
+
+
+class ShapeLod4(Shape):
+    SEGMENT_TYPE_ID = 11
+
+
+class ShapeLod5(Shape):
+    SEGMENT_TYPE_ID = 12
+
+
+class ShapeLod6(Shape):
+    SEGMENT_TYPE_ID = 13
+
+
+class ShapeLod7(Shape):
+    SEGMENT_TYPE_ID = 14
+
+
+class ShapeLod8(Shape):
+    SEGMENT_TYPE_ID = 15
+
+
+class ShapeLod9(Shape):
+    SEGMENT_TYPE_ID = 16
