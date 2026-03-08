@@ -7,8 +7,8 @@ import struct
 from dataclasses import dataclass, field
 import zlib
 import lzma
-import matplotlib.pyplot as plt
 import numpy as np
+import open3d as o3d
 # matplotlib.use('tkagg')
 
 import pandas as pd
@@ -388,20 +388,13 @@ def main():
                     f"No surface triangles reconstructed at offset {entry.offset}."
                 )
                 continue
-            triangles = np.array(triangles, dtype=np.int32)
-            fig = plt.figure(figsize=(8, 8))
-            ax = fig.add_subplot(111, projection='3d')
-            ax.plot_trisurf(
-                points[:, 0],
-                points[:, 1],
-                points[:, 2],
-                triangles=triangles,
-                linewidth=0.1,
-                edgecolor="k",
-                alpha=0.9,
+            mesh = o3d.geometry.TriangleMesh()
+            mesh.vertices = o3d.utility.Vector3dVector(points)
+            mesh.triangles = o3d.utility.Vector3iVector(
+                np.array(triangles, dtype=np.int32)
             )
-            ax.set_title(f"Mesh at offset {entry.offset}")
-            plt.show()
+            mesh.compute_vertex_normals()
+            o3d.visualization.draw_geometries([mesh])
         else:
             logger.warning(
                 f"No vertex coordinates found to plot for shape at offset {entry.offset}."
