@@ -12,6 +12,8 @@ import open3d as o3d
 # matplotlib.use('tkagg')
 
 import pandas as pd
+from matplotlib import pyplot as plt
+
 from core import logging_config
 from lsg.lsg import LSG, read_lsg_segment
 from lsg.types import GUID, JtVersion
@@ -328,6 +330,8 @@ def main():
 
 
     extracted_count = 0
+    all_points = []
+    all_triangles = []
     for entry in jt_toc:
         if not is_shape(entry):
             continue
@@ -336,22 +340,20 @@ def main():
         shape_segment = read_segment(PATH, entry.offset)
         logger.info(f"finished reading shape segment at {entry.offset}")
 
-        all_x, all_y, all_z = [], [], []
-        if isinstance(shape_segment, dict):
-            shape_iter = iter(shape_segment.items())
-            first = next(shape_iter, None)
-            if first is not None:
-                object_id, shape_obj = first
-                coords = try_extract_vertex_coords(shape_obj)
-                if coords is not None:
-                    x, y, z = coords
-                    all_x.extend(x)
-                    all_y.extend(y)
-                    all_z.extend(z)
-                    extracted_count += 1
+        if not isinstance(shape_segment, dict):
+            logger.warning(
+                f"No vertex coordinates found to plot for shape at offset {entry.offset}."
+            )
+            continue
 
-        if all_x and all_y and all_z:
-            points = np.column_stack((all_x, all_y, all_z))
+        for object_id, shape_obj in shape_segment.items():
+            coords = try_extract_vertex_coords(shape_obj)
+            if coords is None:
+                continue
+            x, y, z = coords
+            extracted_count += 1
+            points = np.column_stack((x, y, z))
+
             vertex_lod = getattr(shape_obj, "vertex_shape_LOD_data", None)
             topo_lod = getattr(vertex_lod, "topo_mesh_compressed_lod_data", None) if vertex_lod else None
             topo_rep = getattr(topo_lod, "topo_mesh_compressed_rep_data", None) if topo_lod else None
@@ -366,7 +368,7 @@ def main():
             try:
                 vfm = codec.run()
             except RuntimeError as exc:
-                logger.warning(f"Surface decode failed at offset {entry.offset}: {exc}")
+                logger.error(f"Surface decode failed at offset {entry.offset}: {exc}")
                 continue
 
             triangles = []
@@ -388,22 +390,36 @@ def main():
                     f"No surface triangles reconstructed at offset {entry.offset}."
                 )
                 continue
+
+            triangles = np.array(triangles, dtype=np.int32)
+            base_index = len(all_points)
+            all_points.append(points)
+            all_triangles.append(triangles + base_index)
             mesh = o3d.geometry.TriangleMesh()
             mesh.vertices = o3d.utility.Vector3dVector(points)
-            mesh.triangles = o3d.utility.Vector3iVector(
-                np.array(triangles, dtype=np.int32)
-            )
+            mesh.triangles = o3d.utility.Vector3iVector(triangles)
             mesh.compute_vertex_normals()
             o3d.visualization.draw_geometries([mesh])
-        else:
-            logger.warning(
-                f"No vertex coordinates found to plot for shape at offset {entry.offset}."
+            fig = plt.figure(figsize=(8, 8))
+            ax = fig.add_subplot(111, projection='3d')
+            ax.plot_trisurf(
+                points[:, 0],
+                points[:, 1],
+                points[:, 2],
+                triangles=triangles,
+                linewidth=0.1,
+                edgecolor="k",
+                alpha=0.9,
             )
+            ax.set_title(f"Mesh at offset {entry.offset}")
+            plt.show()
 
     logger.info(
         f"Extracted vertex arrays from {extracted_count} shapes "
         f"across {len(shape_entries)} shape segments"
     )
+    if not all_points:
+        logger.warning("No meshes reconstructed to display.")
     logger.info("Finished")
 
 
