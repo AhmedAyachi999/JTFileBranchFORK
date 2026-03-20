@@ -387,17 +387,22 @@ def main():
                 continue
 
             triangles = np.array(triangles, dtype=np.int32)
-            z_scale = 10.0
-            points[:, 2] *= z_scale
+            extent = np.ptp(points, axis=0).max()
+            if extent > 0 and extent < 1e-3:
+                scale = 1.0 / extent
+                points *= scale
 
             mesh = o3d.geometry.TriangleMesh()
             mesh.vertices = o3d.utility.Vector3dVector(points)
             mesh.triangles = o3d.utility.Vector3iVector(triangles)
             mesh.compute_vertex_normals()
-            o3d.visualization.draw_geometries(
-                [mesh],
-                window_name=f"Mesh at offset {entry.offset}",
-            )
+
+            vis = o3d.visualization.Visualizer()
+            vis.create_window(window_name=f"Mesh at offset {entry.offset}")
+            vis.add_geometry(mesh)
+            vis.reset_view_point(True)
+            vis.run()
+            vis.destroy_window()
 
     logger.info(
         f"Extracted vertex arrays from {extracted_count} shapes "
