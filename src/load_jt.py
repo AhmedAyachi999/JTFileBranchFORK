@@ -9,11 +9,8 @@ import zlib
 import lzma
 import numpy as np
 import open3d as o3d
-# matplotlib.use('tkagg')
 
 import pandas as pd
-from matplotlib import pyplot as plt
-
 from core import logging_config
 from lsg.lsg import LSG, read_lsg_segment
 from lsg.types import GUID, JtVersion
@@ -330,8 +327,6 @@ def main():
 
 
     extracted_count = 0
-    all_points = []
-    all_triangles = []
     for entry in jt_toc:
         if not is_shape(entry):
             continue
@@ -392,34 +387,22 @@ def main():
                 continue
 
             triangles = np.array(triangles, dtype=np.int32)
-            base_index = len(all_points)
-            all_points.append(points)
-            all_triangles.append(triangles + base_index)
+            z_scale = 10.0
+            points[:, 2] *= z_scale
+
             mesh = o3d.geometry.TriangleMesh()
             mesh.vertices = o3d.utility.Vector3dVector(points)
             mesh.triangles = o3d.utility.Vector3iVector(triangles)
             mesh.compute_vertex_normals()
-            o3d.visualization.draw_geometries([mesh])
-            fig = plt.figure(figsize=(8, 8))
-            ax = fig.add_subplot(111, projection='3d')
-            ax.plot_trisurf(
-                points[:, 0],
-                points[:, 1],
-                points[:, 2],
-                triangles=triangles,
-                linewidth=0.1,
-                edgecolor="k",
-                alpha=0.9,
+            o3d.visualization.draw_geometries(
+                [mesh],
+                window_name=f"Mesh at offset {entry.offset}",
             )
-            ax.set_title(f"Mesh at offset {entry.offset}")
-            plt.show()
 
     logger.info(
         f"Extracted vertex arrays from {extracted_count} shapes "
         f"across {len(shape_entries)} shape segments"
     )
-    if not all_points:
-        logger.warning("No meshes reconstructed to display.")
     logger.info("Finished")
 
 
