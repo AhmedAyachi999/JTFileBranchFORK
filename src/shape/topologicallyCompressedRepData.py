@@ -245,7 +245,14 @@ class MeshCoderDriver:
             iCCntxt = 6
         else:
             iCCntxt = 7
-        print(f"[faceCntxt] vtx={iVtx} cVal={cVal} nKnownFaces={nKnownFaces} cKnownTotDeg={cKnownTotDeg} ctx={iCCntxt}")
+        logger.debug(
+            "[faceCntxt] vtx=%s cVal=%s nKnownFaces=%s cKnownTotDeg=%s ctx=%s",
+            iVtx,
+            cVal,
+            nKnownFaces,
+            cKnownTotDeg,
+            iCCntxt,
+        )
         return iCCntxt
 
     def _nextDegSymbol(self, _context: int = 0) -> int:
@@ -563,8 +570,8 @@ class _MeshCodec:
             return
         deg = vfm.degree(iFace)
         slots = [vfm.vtx(iFace, s) for s in range(deg)]
-        print(f"Activated face {iFace} slots: {slots}")
-        print(f"Activated face {iFace} degree: {deg}")
+        logger.debug("Activated face %s slots: %s", iFace, slots)
+        logger.debug("Activated face %s degree: %s", iFace, deg)
 
     def completeV(self, iFace: int):
         """
