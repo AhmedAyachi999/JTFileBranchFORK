@@ -3,6 +3,7 @@ from dataclasses import dataclass
 
 from codec.deeringNormal import DeeringNormalCodec
 from codec.i32Cdp2 import I32CDP2
+from lsg.types import JtVersion
 
 
 @dataclass
@@ -13,7 +14,7 @@ class CompressedVertexNormalArray:
     normal_coordinates: [[int]]
 
     @classmethod
-    def from_bytes(cls, e_bytes):
+    def from_bytes(cls, e_bytes, version=JtVersion.V9d5):
         normal_count, number_components, quantization_bits = struct.unpack(
             "<iBB", e_bytes.read(6))
         if quantization_bits == 0:
@@ -22,8 +23,8 @@ class CompressedVertexNormalArray:
             vertex_normal_codes = []
             vertex_normal_coordinates = []
             for i in range(number_components):
-                normal_exponents = I32CDP2.read_vec_i_32(e_bytes)
-                normal_mantissae = I32CDP2.read_vec_i_32(e_bytes)
+                normal_exponents = I32CDP2.read_vec_i_32(e_bytes, version=version)
+                normal_mantissae = I32CDP2.read_vec_i_32(e_bytes, version=version)
                 normal_code = [(e << 23 | m) & 0xffffffff for e,
                                m in zip(normal_exponents, normal_mantissae)]
 
@@ -36,10 +37,10 @@ class CompressedVertexNormalArray:
                     0] for c in codes]
                 vertex_normal_coordinates.append(coordinates)
         else:
-            sextant_codes = I32CDP2.read_vec_i_32(e_bytes)
-            octant_codes = I32CDP2.read_vec_i_32(e_bytes)
-            theta_codes = I32CDP2.read_vec_i_32(e_bytes)
-            psi_codes = I32CDP2.read_vec_i_32(e_bytes)
+            sextant_codes = I32CDP2.read_vec_i_32(e_bytes, version=version)
+            octant_codes = I32CDP2.read_vec_i_32(e_bytes, version=version)
+            theta_codes = I32CDP2.read_vec_i_32(e_bytes, version=version)
+            psi_codes = I32CDP2.read_vec_i_32(e_bytes, version=version)
             dnc = DeeringNormalCodec(quantization_bits)
             xyz = [dnc.convert_code_to_vec(s, o, t, p) for s, o, t, p in
                    zip(sextant_codes, octant_codes, theta_codes, psi_codes)]

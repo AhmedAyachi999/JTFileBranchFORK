@@ -18,7 +18,7 @@ class TopoMeshTopologicallyCompressedLODData:
     topo_mesh_compressed_rep_data: TopologicallyCompressedRepData
 
     @classmethod
-    def from_bytes(cls, e_bytes, version=JtVersion.V9d5):
+    def from_bytes(cls, e_bytes, version=JtVersion.V9d5, end_offset=None):
         preview_len = 64 if e_bytes.remaining() >= 64 else e_bytes.remaining()
         preview = e_bytes.bytes[e_bytes.offset:e_bytes.offset + preview_len].hex(" ")
         topo_mesh_lod_data = TopoMeshLODData.from_bytes(
@@ -32,7 +32,7 @@ class TopoMeshTopologicallyCompressedLODData:
             RuntimeError(
                 f"version {version_number} not supported in {__name__}")
         topo_mesh_compressed_rep_data = TopologicallyCompressedRepData.from_bytes(
-            e_bytes, version=version)
+            e_bytes, version=version, end_offset=end_offset)
 
         preview_len = 64 if e_bytes.remaining() >= 64 else e_bytes.remaining()
         preview = e_bytes.bytes[e_bytes.offset:e_bytes.offset + preview_len].hex(" ")

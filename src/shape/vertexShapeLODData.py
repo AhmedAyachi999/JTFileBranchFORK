@@ -30,7 +30,6 @@ class VertexShapeLODData:
 
     @classmethod
     def from_bytes(cls, e_bytes, shape, version=JtVersion.unsupported):
-        logger.warning(f"{version=}")
         if version == JtVersion.V9d5:
             version_number = struct.unpack("<h", e_bytes.read(2))[0]
         elif version == JtVersion.unsupported:
@@ -39,7 +38,6 @@ class VertexShapeLODData:
         else:
             e_bytes.read(1)  # base shape lod data
             version_number = struct.unpack("B", e_bytes.read(1))[0]
-            logger.critical(f"{version_number=}")
         if version_number != 1:
             raise RuntimeError(
                 f"Version {version_number} not supported for {cls.__name__}")
@@ -133,13 +131,18 @@ class VertexShapeLODData:
             is present on the shape when the bit is set.
         """
 
+        nested_element_end = None
         if version == JtVersion.V10d5:
-            _ = ElementHeader.from_bytes(e_bytes)
+            nested_header = ElementHeader.from_bytes(e_bytes)
+            nested_payload_length = max(0, nested_header.length - 25)
+            nested_element_end = min(
+                len(e_bytes.bytes), e_bytes.offset + nested_payload_length
+            )
         elif version == JtVersion.V9d5:
             e_bytes.read(2)
         if shape == "Tri-Strip":
             topo_mesh_compressed_lod_data = TopoMeshTopologicallyCompressedLODData.from_bytes(
-                e_bytes, version=version)
+                e_bytes, version=version, end_offset=nested_element_end)
         else:
             e_bytes.read(2)
             topo_mesh_compressed_lod_data = TopoMeshCompressedLODData.from_bytes(

@@ -3,9 +3,11 @@ import logging
 import math
 import struct
 
-from codec.bitlength import decode_bitlength2
+from codec.bitlength import decode_bitlength2, decode_bitlength3
 from codec.codecDriver import CodecDriver
-from codec.arithmetic import ProbabilityContext, decode_arithmetic
+from codec.arithmetic import ProbabilityContext, decode_arithmetic, decode_arithmetic_v10
+from lsg.types import JtVersion
+from util.bitBuffer import BitBuffer
 from util.byteStream import ByteStream
 
 logger = logging.getLogger(__name__)
@@ -28,12 +30,16 @@ class I32CDP2:
     CODECTYPE_BITLENGTH = 1
     CODECTYPE_ARITHMETIC = 3
     CODECTYPE_CHOPPER = 4
+    CODECTYPE_MOVE_TO_FRONT = 5
 
     @classmethod
     def read_vec_i_32(
-        cls, e_bytes: ByteStream, predictor_type: PredictorType = PredictorType.PredNULL
+        cls,
+        e_bytes: ByteStream,
+        predictor_type: PredictorType = PredictorType.PredNULL,
+        version=JtVersion.V9d5,
     ) -> [int]:
-        decoded_symbols = cls.decode_bytes(e_bytes)
+        decoded_symbols = cls.decode_bytes(e_bytes, version=version)
         unpacked_symbols = cls.unpack_residuals(decoded_symbols, predictor_type)
         return unpacked_symbols
 
@@ -82,35 +88,68 @@ class I32CDP2:
             return index
 
     @classmethod
-    def decode_bytes(cls, e_bytes: ByteStream) -> list:
+    def _move_to_front_decode(cls, values: list[int], offsets: list[int]) -> list[int]:
+        window = []
+        decoded_symbols = []
+        value_index = 0
+        for offset in offsets:
+            if offset == -1:
+                value = values[value_index]
+                value_index += 1
+                window.insert(0, value)
+                if len(window) > 16:
+                    window.pop()
+                decoded_symbols.append(value)
+            else:
+                value = window[offset]
+                del window[offset]
+                window.insert(0, value)
+                decoded_symbols.append(value)
+        return decoded_symbols
+
+    @classmethod
+    def decode_bytes(cls, e_bytes: ByteStream, version=JtVersion.V9d5) -> list:
         logger.debug(
             f"starting decode of {e_bytes.bytes[e_bytes.offset:e_bytes.offset+40].hex(' ')} ..."
         )
+        is_v10 = version == JtVersion.V10d5
         value_count = struct.unpack("<i", e_bytes.read(4))[0]
         if value_count <= 0:
             return []
 
         codec_type = struct.unpack("<B", e_bytes.read(1))[0]
-        if codec_type != 0 and codec_type != 1 and codec_type != 3 and codec_type != 4:
+        supported_codec_types = {
+            cls.CODECTYPE_NULL,
+            cls.CODECTYPE_BITLENGTH,
+            cls.CODECTYPE_ARITHMETIC,
+            cls.CODECTYPE_CHOPPER,
+        }
+        if is_v10:
+            supported_codec_types.add(cls.CODECTYPE_MOVE_TO_FRONT)
+        if codec_type not in supported_codec_types:
             raise RuntimeError(
                 f"Codec Type {codec_type} not supported for {cls.__name__}"
             )
         elif codec_type == cls.CODECTYPE_CHOPPER:
             logger.debug(f"{codec_type=}")
             chop_bits = struct.unpack("<B", e_bytes.read(1))[0]
-            if chop_bits == 0:
-                return cls.decode_bytes(e_bytes)
-            else:
-                value_bias, value_span_bits = struct.unpack("<iB", e_bytes.read(5))
-                chopped_msb_data = cls.decode_bytes(e_bytes)
-                chopped_lsb_data = cls.decode_bytes(e_bytes)
+            if chop_bits == 0 and not is_v10:
+                return cls.decode_bytes(e_bytes, version=version)
+            value_bias, value_span_bits = struct.unpack("<iB", e_bytes.read(5))
+            chopped_msb_data = cls.decode_bytes(e_bytes, version=version)
+            chopped_lsb_data = cls.decode_bytes(e_bytes, version=version)
 
-                decoded_symbols = []
-                for msb, lsb in zip(chopped_msb_data, chopped_lsb_data):
-                    decoded_symbols.append(
-                        (lsb | msb << (value_span_bits - chop_bits)) + value_bias
-                    )
-                return decoded_symbols
+            decoded_symbols = []
+            for msb, lsb in zip(chopped_msb_data, chopped_lsb_data):
+                decoded_symbols.append(
+                    (lsb | msb << (value_span_bits - chop_bits)) + value_bias
+                )
+            return decoded_symbols
+        elif codec_type == cls.CODECTYPE_MOVE_TO_FRONT:
+            logger.debug(f"{codec_type=}")
+            values = cls.decode_bytes(e_bytes, version=version)
+            offsets = cls.decode_bytes(e_bytes, version=version)
+            return cls._move_to_front_decode(values, offsets)
         elif codec_type == cls.CODECTYPE_NULL:
             logger.debug(f"{codec_type=}")
             length = struct.unpack("<i", e_bytes.read(4))[0]
@@ -134,8 +173,14 @@ class I32CDP2:
         out_of_band_values = []
         if codec_type == cls.CODECTYPE_ARITHMETIC:
             logger.debug(f"{codec_type=}")
-            int_32_probability_contexts = ProbabilityContext.from_bytes(e_bytes)
-            out_of_band_values = cls.decode_bytes(e_bytes)
+            int_32_probability_contexts = ProbabilityContext.from_bytes(
+                e_bytes, version=version
+            )
+            if is_v10:
+                if int_32_probability_contexts.has_out_of_band_values:
+                    out_of_band_values = cls.decode_bytes(e_bytes, version=version)
+            else:
+                out_of_band_values = cls.decode_bytes(e_bytes, version=version)
             if code_text_length == 0 and len(out_of_band_values) == value_count:
                 return out_of_band_values
 
@@ -146,15 +191,24 @@ class I32CDP2:
             int_32_probability_contexts,
             out_of_band_values,
         )
+        codec_driver.bit_buffer = BitBuffer(
+            ByteStream(code_text), endianness="big"
+        )
         logger.debug(f"{codec_driver.bit_buffer.position=}")
 
         if codec_type == cls.CODECTYPE_BITLENGTH:
             logger.debug(f"{codec_type=}")
             logger.debug("calling decode_bitlength2 from i32csp2")
-            decoded_symbols = decode_bitlength2(codec_driver)
+            decoded_symbols = (
+                decode_bitlength3(codec_driver) if is_v10 else decode_bitlength2(codec_driver)
+            )
         elif codec_type == cls.CODECTYPE_ARITHMETIC:
             logger.debug(f"{codec_type=}")
-            decoded_symbols = decode_arithmetic(codec_driver)
+            decoded_symbols = (
+                decode_arithmetic_v10(codec_driver)
+                if is_v10
+                else decode_arithmetic(codec_driver)
+            )
         else:
             decoded_symbols = []
 

@@ -1,6 +1,7 @@
 import struct
 from dataclasses import dataclass, field
 
+from lsg.types import JtVersion
 from lsg.types import QuantizationParameters
 from shape.compressedVertexColorArray import CompressedVertexColorArray
 from shape.compressedVertexCoordinateArray import CompressedVertexCoordinateArray
@@ -26,7 +27,7 @@ class TopologicallyCompressedVertexRecords:
         default=None)
 
     @classmethod
-    def from_bytes(cls, e_bytes):
+    def from_bytes(cls, e_bytes, version=JtVersion.V9d5, coordinates_only=False):
         vertex_binding = struct.unpack("<Q", e_bytes.read(8))[0]
         quantization_parameters = QuantizationParameters.from_bytes(e_bytes)
         number_of_topological_vertices = struct.unpack(
@@ -39,11 +40,22 @@ class TopologicallyCompressedVertexRecords:
         compressed_vertex_coordinate_array = None
         if (vertex_binding & 0x07) != 0:
             compressed_vertex_coordinate_array = CompressedVertexCoordinateArray.from_bytes(
-                e_bytes)
+                e_bytes, version=version)
+        if coordinates_only:
+            return TopologicallyCompressedVertexRecords(
+                vertex_binding,
+                quantization_parameters,
+                number_of_topological_vertices,
+                compressed_vertex_coordinate_array,
+                None,
+                None,
+                [None] * 8,
+                None,
+            )
         compressed_vertex_normal_array = None
         if (vertex_binding & 0x08) != 0:
             compressed_vertex_normal_array = CompressedVertexNormalArray.from_bytes(
-                e_bytes)
+                e_bytes, version=version)
         compressed_vertex_color_array = None
         if (vertex_binding & 0x30) != 0:
             compressed_vertex_color_array = CompressedVertexColorArray.from_bytes(
@@ -77,7 +89,7 @@ class TopologicallyCompressedVertexRecords:
         compressed_vertex_flag_array = None
         if (vertex_binding & 0x40) != 0:
             compressed_vertex_flag_array = CompressedVertexFlagArray.from_bytes(
-                e_bytes)
+                e_bytes, version=version)
         return TopologicallyCompressedVertexRecords(vertex_binding,
                                                     quantization_parameters,
                                                     number_of_topological_vertices,

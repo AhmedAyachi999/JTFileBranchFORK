@@ -73,3 +73,73 @@ def decode_arithmetic(codec_driver):
             n_bits -= 1
 
     return decoded_symbols
+
+
+def _entry_from_rescaled_code(table, rescaled_code):
+    acc = 0
+    for entry in table:
+        next_acc = acc + entry.count
+        if rescaled_code < next_acc:
+            return entry, acc, next_acc
+        acc = next_acc
+    raise RuntimeError(f"no probability entry found for {rescaled_code=}")
+
+
+def decode_arithmetic_v10(codec_driver):
+    low = 0x0000
+    high = 0xFFFF
+    decoded_symbols = []
+    out_of_band_values = codec_driver.out_of_band_values or []
+    out_of_band_index = 0
+    total_count = codec_driver.int_32_probability_contexts.total_count
+    table = codec_driver.int_32_probability_contexts.table
+
+    if total_count <= 0:
+        return decoded_symbols
+
+    code_text, n_bits = codec_driver.get_next_code_text()
+    code = (code_text >> 16) & 0xFFFF
+    code_text = (code_text << 16) & 0xFFFFFFFF
+    n_bits -= 16
+
+    for i in range(codec_driver.value_count):
+        rescaled_code = (((code - low) + 1) * total_count - 1) // ((high - low) + 1)
+        entry, symbol_low, symbol_high = _entry_from_rescaled_code(table, rescaled_code)
+
+        symbol_range = high - low + 1
+        high = (low + ((symbol_range * symbol_high) // total_count) - 1) & 0xFFFF
+        low = (low + ((symbol_range * symbol_low) // total_count)) & 0xFFFF
+
+        while True:
+            if (((~(high ^ low)) & 0x8000) != 0):
+                pass
+            elif (low & 0x4000) > 0 and (high & 0x4000) == 0:
+                code ^= 0x4000
+                code &= 0xFFFF
+                low &= 0x3FFF
+                high |= 0x4000
+                high &= 0xFFFF
+            else:
+                break
+
+            low = (low << 1) & 0xFFFF
+            high = ((high << 1) | 1) & 0xFFFF
+            code = (code << 1) & 0xFFFF
+
+            if n_bits == 0:
+                code_text, n_bits = codec_driver.get_next_code_text()
+            code |= (code_text >> 31) & 0x1
+            code_text = (code_text << 1) & 0xFFFFFFFF
+            n_bits -= 1
+
+        if entry.symbol == -2:
+            if out_of_band_index >= len(out_of_band_values):
+                raise RuntimeError(
+                    f"Out-of-band stream missing while decoding value {i} of {codec_driver.value_count}"
+                )
+            decoded_symbols.append(out_of_band_values[out_of_band_index])
+            out_of_band_index += 1
+        else:
+            decoded_symbols.append(entry.value)
+
+    return decoded_symbols

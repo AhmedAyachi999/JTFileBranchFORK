@@ -63,29 +63,141 @@ class TopologicallyCompressedRepData:
     topologically_compressed_vertex_records: TopologicallyCompressedVertexRecords
 
     @classmethod
-    def from_bytes(cls, e_bytes, version=JtVersion.V9d5):
+    def _is_plausible_v10_vertex_record_start(
+        cls, raw_bytes: bytes, candidate_offset: int, end_offset: int
+    ) -> bool:
+        minimum_size = 8 + 4 + 4 + 4 + 4 + 1 + 27 + 4
+        if candidate_offset + minimum_size > end_offset:
+            return False
+
+        vertex_binding = struct.unpack(
+            "<Q", raw_bytes[candidate_offset:candidate_offset + 8]
+        )[0]
+        if (vertex_binding & 0x07) == 0:
+            return False
+
+        bits_per_vertex, normal_bits_factor, bits_per_texture_coord, bits_per_color = raw_bytes[
+            candidate_offset + 8:candidate_offset + 12
+        ]
+        if any(v > 32 for v in (
+            bits_per_vertex,
+            normal_bits_factor,
+            bits_per_texture_coord,
+            bits_per_color,
+        )):
+            return False
+
+        number_of_topological_vertices = struct.unpack(
+            "<i", raw_bytes[candidate_offset + 12:candidate_offset + 16]
+        )[0]
+        if number_of_topological_vertices <= 0 or number_of_topological_vertices > 10_000_000:
+            return False
+
+        number_of_vertex_attributes = struct.unpack(
+            "<i", raw_bytes[candidate_offset + 16:candidate_offset + 20]
+        )[0]
+        if number_of_vertex_attributes <= 0:
+            return False
+
+        unique_vertex_count = struct.unpack(
+            "<i", raw_bytes[candidate_offset + 20:candidate_offset + 24]
+        )[0]
+        number_components = raw_bytes[candidate_offset + 24]
+        if unique_vertex_count <= 0 or unique_vertex_count > number_of_topological_vertices:
+            return False
+        if number_components not in (2, 3, 4):
+            return False
+
+        quantizer_bits = [
+            raw_bytes[candidate_offset + 33],
+            raw_bytes[candidate_offset + 42],
+            raw_bytes[candidate_offset + 51],
+        ]
+        return all(bits <= 32 for bits in quantizer_bits)
+
+    @classmethod
+    def _read_v10_vertex_records_only(cls, e_bytes, end_offset: int):
+        raw_bytes = e_bytes.bytes
+        scan_start = e_bytes.offset
+
+        for candidate_offset in range(scan_start, end_offset):
+            if not cls._is_plausible_v10_vertex_record_start(
+                raw_bytes, candidate_offset, end_offset
+            ):
+                continue
+
+            candidate_stream = bs.ByteStream(raw_bytes, offset=candidate_offset)
+            try:
+                vertex_records = TopologicallyCompressedVertexRecords.from_bytes(
+                    candidate_stream,
+                    version=JtVersion.V10d5,
+                    coordinates_only=True,
+                )
+            except Exception:
+                continue
+
+            coord_array = getattr(vertex_records, "compressed_vertex_coordinate_array", None)
+            if coord_array is None or coord_array.unique_vertex_count <= 0:
+                continue
+
+            topo_hash = 0
+            if candidate_offset >= scan_start + 4:
+                topo_hash = struct.unpack(
+                    "<I", raw_bytes[candidate_offset - 4:candidate_offset]
+                )[0]
+            e_bytes.offset = end_offset
+            return TopologicallyCompressedRepData(
+                [],
+                [],
+                [],
+                [],
+                [],
+                [],
+                [],
+                [],
+                [],
+                [],
+                topo_hash,
+                vertex_records,
+            )
+
+        raise RuntimeError(
+            f"Failed to locate V10.5 vertex records between offsets {scan_start} and {end_offset}"
+        )
+
+    @classmethod
+    def from_bytes(cls, e_bytes, version=JtVersion.V9d5, end_offset=None):
+        if version == JtVersion.V10d5 and end_offset is not None:
+            return cls._read_v10_vertex_records_only(e_bytes, end_offset)
+
         logger.debug("creating from bytes")
         logger.debug((e_bytes.bytes[e_bytes.offset : e_bytes.offset + 30]).hex(" "))
 
         face_degrees = []
         for _ in range(8):
-            face_degrees.append(I32CDP2.read_vec_i_32(e_bytes))
+            face_degrees.append(I32CDP2.read_vec_i_32(e_bytes, version=version))
 
-        vertex_valences = I32CDP2.read_vec_i_32(e_bytes)
+        vertex_valences = I32CDP2.read_vec_i_32(e_bytes, version=version)
 
-        vertex_groups = I32CDP2.read_vec_i_32(e_bytes)
-        vertex_flags = I32CDP2.read_vec_i_32(e_bytes, PredictorType.PredLag1)
+        vertex_groups = I32CDP2.read_vec_i_32(e_bytes, version=version)
+        vertex_flags = I32CDP2.read_vec_i_32(
+            e_bytes, PredictorType.PredLag1, version=version
+        )
 
         face_attribute_masks = []
         for _ in range(8):
-            face_attribute_masks.append(I32CDP2.read_vec_i_32(e_bytes))
-        face_attribute_masks8_30 = I32CDP2.read_vec_i_32(e_bytes)
-        face_attribute_masks8_4 = I32CDP2.read_vec_i_32(e_bytes)
+            face_attribute_masks.append(I32CDP2.read_vec_i_32(e_bytes, version=version))
+        face_attribute_masks8_30 = I32CDP2.read_vec_i_32(e_bytes, version=version)
+        face_attribute_masks8_4 = I32CDP2.read_vec_i_32(e_bytes, version=version)
         high_degree_face_attribute_mask = bs.read_vec_i_32(e_bytes)
-        split_face_syms = I32CDP2.read_vec_i_32(e_bytes, PredictorType.PredLag1)
-        split_face_positions = I32CDP2.read_vec_i_32(e_bytes)
+        split_face_syms = I32CDP2.read_vec_i_32(
+            e_bytes, PredictorType.PredLag1, version=version
+        )
+        split_face_positions = I32CDP2.read_vec_i_32(e_bytes, version=version)
         read_hash = struct.unpack("<I", e_bytes.read(4))[0]
-        topologically_compressed_vertex_records = TopologicallyCompressedVertexRecords.from_bytes(e_bytes)
+        topologically_compressed_vertex_records = TopologicallyCompressedVertexRecords.from_bytes(
+            e_bytes, version=version
+        )
 
         return TopologicallyCompressedRepData(
             face_degrees,
